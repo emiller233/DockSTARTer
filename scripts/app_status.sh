@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+app_status() {
+	# Enable the status of apps given.  Apps will be seperate arguments and/or seperated by spaces
+	local -a AppList
+	IFS=$' \t\n\r' read -d '' -ra AppList <<< "$*" || true
+	for APPNAME in "${AppList[@]}"; do
+		local AppName
+		run_script 'app_nicename_into' AppName "${APPNAME}"
+		if run_script 'app_is_referenced' "${AppName}"; then
+			if run_script 'app_is_added' "${AppName}"; then
+				if run_script 'app_is_enabled' "${AppName}"; then
+					resolve_strings C "{{|App|}}${AppName}{{[-]}} is enabled."
+				else
+					resolve_strings C "{{|App|}}${AppName}{{[-]}} is disabled."
+				fi
+			else
+				resolve_strings C "{{|App|}}${AppName}{{[-]}} is referenced."
+			fi
+		elif run_script 'app_is_builtin' "${AppName}"; then
+			resolve_strings C "{{|App|}}${AppName}{{[-]}} is not added."
+		else
+			resolve_strings C "{{|App|}}${AppName}{{[-]}} does not exist."
+		fi
+	done
+}
+
+test_app_status() {
+	#run_script 'app_status' watchtower "samba radarr"
+	#cat "${COMPOSE_ENV}"
+	warn "CI does not test app_status."
+}

@@ -1,334 +1,32 @@
 #!/usr/bin/env bash
+shopt -s extdebug
+set +o posix
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-usage() {
-    cat << EOF
-Usage: ds [OPTION]
-NOTE: ds shortcut is only available after the first run of
-    bash main.sh
+declare -rgx APPLICATION_NAME='DockSTARTer'
+declare -rgx APPLICATION_COMMAND='ds'
+declare -rgx APPLICATION_REPO='https://github.com/GhostWriters/DockSTARTer'
+declare -rgx APPLICATION_LEGACY_BRANCH='master'
+declare -rgx APPLICATION_DEFAULT_BRANCH='main'
+declare -rgx APPLICATION_FOLDER_NAME_DEFAULT='.dockstarter'
 
-This is the main DockSTARTer script.
-For regular usage you can run without providing any options.
+declare -rgx TEMPLATES_NAME='DockSTARTer-Templates'
+declare -rgx TEMPLATES_REPO='https://github.com/GhostWriters/DockSTARTer-Templates'
+declare -rgx TEMPLATES_DEFAULT_BRANCH='main'
+declare -rgx TEMPLATES_PARENT_FOLDER_NAME='templates'
+declare -rgx TEMPLATES_REPO_FOLDER_NAME='DockSTARTer-Templates'
 
--a --add <appname>
-    add the default .env variables for the app specified
--c --compose
-    run docker-compose up with confirmation prompt
--c --compose <up/down/restart/pull>
-    run docker-compose commands without confirmation prompts
--e --env
-    update your .env file with new variables
---env-get=<var>
-    get the value of a <var>iable in .env
---env-set=<var>,<val>
-    Set the <val>ue of a <var>iable in .env
--f --force
-    force certain install/upgrade actions to run even if they would not be needed
--h --help
-    show this usage information
--i --install
-    install/update all dependencies
--p --prune
-    remove unused docker resources
--r --remove
-    prompt to remove .env variables for all disabled apps
--r --remove <appname>
-    prompt to remove the .env variables for the app specified
--t --test <test_name>
-    run tests to check the program
--u --update
-    update DockSTARTer to the latest stable commits
--u --update <branch>
-    update DockSTARTer to the latest commits from the specified branch
--v --verbose
-    verbose
--x --debug
-    debug
-EOF
-    exit
+assert_nameref_is_string() {
+	local type_info
+	type_info=$(declare -p "${1}" 2> /dev/null) || return 0
+	[[ ! ${type_info} =~ ^declare\ -[a-zA-Z]*[aA] ]] || fatal "Variable '{{|Var|}}${1}{{[-]}}' is an array, expected a string"
 }
 
-# Script Information
-# https://stackoverflow.com/questions/59895/get-the-source-directory-of-a-bash-script-from-within-the-script-itself/246128#246128
-get_scriptname() {
-    # https://stackoverflow.com/questions/35006457/choosing-between-0-and-bash-source/35006505#35006505
-    local SOURCE=${BASH_SOURCE[0]:-$0}
-    while [[ -L ${SOURCE} ]]; do # resolve ${SOURCE} until the file is no longer a symlink
-        local DIR
-        DIR=$(cd -P "$(dirname "${SOURCE}")" > /dev/null 2>&1 && pwd)
-        SOURCE=$(readlink "${SOURCE}")
-        [[ ${SOURCE} != /* ]] && SOURCE="${DIR}/${SOURCE}" # if ${SOURCE} was a relative symlink, we need to resolve it relative to the path where the symlink file was located
-    done
-    echo "${SOURCE}"
-}
-SCRIPTPATH=$(cd -P "$(dirname "$(get_scriptname)")" > /dev/null 2>&1 && pwd)
-readonly SCRIPTPATH
-SCRIPTNAME="${SCRIPTPATH}/$(basename "$(get_scriptname)")"
-readonly SCRIPTNAME
-
-# Cleanup Function
-cleanup() {
-    local -ri EXIT_CODE=$?
-    sudo sh -c "cat ${MKTEMP_LOG:-/dev/null} >> ${SCRIPTPATH}/dockstarter.log" || true
-    sudo rm -f "${MKTEMP_LOG}" || true
-    sudo sh -c "echo \"$(tail -1000 "${SCRIPTPATH}/dockstarter.log")\" > ${SCRIPTPATH}/dockstarter.log" || true
-    sudo -E chmod +x "${SCRIPTNAME}" > /dev/null 2>&1 || true
-
-    if [[ ${CI:-} == true ]] && [[ ${TRAVIS_SECURE_ENV_VARS:-} == false ]]; then
-        echo "TRAVIS_SECURE_ENV_VARS is false for Pull Requests from remote branches. Please retry failed builds!"
-    fi
-
-    if [[ ${EXIT_CODE} -ne 0 ]]; then
-        echo "DockSTARTer did not finish running successfully."
-    fi
-
-    exit ${EXIT_CODE}
-    trap - ERR EXIT SIGABRT SIGALRM SIGHUP SIGINT SIGQUIT SIGTERM
-}
-trap 'cleanup' ERR EXIT SIGABRT SIGALRM SIGHUP SIGINT SIGQUIT SIGTERM
-
-# Command Line Arguments
-readonly ARGS=("$@")
-cmdline() {
-    # http://www.kfirlavi.com/blog/2012/11/14/defensive-bash-programming/
-    # http://kirk.webfinish.com/2009/10/bash-shell-script-to-use-getopts-with-gnu-style-long-positional-parameters/
-    local ARG=
-    local LOCAL_ARGS
-    for ARG; do
-        local DELIM=""
-        case "${ARG}" in
-            #translate --gnu-long-options to -g (short options)
-            --add) LOCAL_ARGS="${LOCAL_ARGS:-}-a " ;;
-            --compose) LOCAL_ARGS="${LOCAL_ARGS:-}-c " ;;
-            --debug) LOCAL_ARGS="${LOCAL_ARGS:-}-x " ;;
-            --env) LOCAL_ARGS="${LOCAL_ARGS:-}-e " ;;
-            --env-*)
-                readonly ENVMETHOD=${ARG%%=*}
-                readonly ENVARG=${ARG#*=}
-                if [[ ${ENVMETHOD:-} == "${ENVARG:-}" ]]; then
-                    echo "Invalid usage. Must be on of the following:"
-                    echo "  --env-set with variable name ('--env-set=VAR,VAL') and value"
-                    echo "  --env-get with variable name ('--env-get=VAR')"
-                    exit
-                else
-                    readonly ENVVAR=${ENVARG%%,*}
-                    readonly ENVVAL=${ENVARG#*,}
-                fi
-                ;;
-            --force) LOCAL_ARGS="${LOCAL_ARGS:-}-f " ;;
-            --help) LOCAL_ARGS="${LOCAL_ARGS:-}-h " ;;
-            --install) LOCAL_ARGS="${LOCAL_ARGS:-}-i " ;;
-            --prune) LOCAL_ARGS="${LOCAL_ARGS:-}-p " ;;
-            --remove) LOCAL_ARGS="${LOCAL_ARGS:-}-r " ;;
-            --test) LOCAL_ARGS="${LOCAL_ARGS:-}-t " ;;
-            --update) LOCAL_ARGS="${LOCAL_ARGS:-}-u " ;;
-            --verbose) LOCAL_ARGS="${LOCAL_ARGS:-}-v " ;;
-            #pass through anything else
-            *)
-                [[ ${ARG:0:1} == "-" ]] || DELIM='"'
-                LOCAL_ARGS="${LOCAL_ARGS:-}${DELIM}${ARG}${DELIM} "
-                ;;
-        esac
-    done
-
-    #Reset the positional parameters to the short options
-    eval set -- "${LOCAL_ARGS:-}"
-
-    while getopts ":a:c:efghipr:t:u:vx" OPTION; do
-        case ${OPTION} in
-            a)
-                readonly ADD=${OPTARG}
-                ;;
-            c)
-                case ${OPTARG} in
-                    down | generate | merge | pull* | restart* | up*)
-                        local MULTIOPT
-                        MULTIOPT=("$OPTARG")
-                        until [[ $(eval "echo \${$OPTIND}" 2> /dev/null) =~ ^-.* ]] || [[ -z $(eval "echo \${$OPTIND}" 2> /dev/null) ]]; do
-                            MULTIOPT+=("$(eval "echo \${$OPTIND}")")
-                            OPTIND=$((OPTIND + 1))
-                        done
-                        COMPOSE=$(printf "%s " "${MULTIOPT[@]}" | xargs)
-                        readonly COMPOSE
-                        ;;
-                    *)
-                        echo "Invalid compose option."
-                        exit 1
-                        ;;
-                esac
-                ;;
-            e)
-                readonly ENV=true
-                ;;
-            f)
-                readonly FORCE=true
-                ;;
-            h)
-                usage
-                exit
-                ;;
-            i)
-                readonly INSTALL=true
-                ;;
-            p)
-                readonly PRUNE=true
-                ;;
-            r)
-                readonly REMOVE=${OPTARG}
-                ;;
-            t)
-                readonly TEST=${OPTARG}
-                ;;
-            u)
-                readonly UPDATE=${OPTARG}
-                ;;
-            v)
-                readonly VERBOSE=1
-                ;;
-            x)
-                readonly DEBUG=1
-                set -x
-                ;;
-            :)
-                case ${OPTARG} in
-                    c)
-                        readonly COMPOSE=up
-                        ;;
-                    r)
-                        readonly REMOVE=true
-                        ;;
-                    u)
-                        readonly UPDATE=true
-                        ;;
-                    *)
-                        echo "${OPTARG} requires an option."
-                        exit 1
-                        ;;
-                esac
-                ;;
-            *)
-                usage
-                exit
-                ;;
-        esac
-    done
-    return
-}
-cmdline "${ARGS[@]:-}"
-if [[ -n ${DEBUG:-} ]] && [[ -n ${VERBOSE:-} ]]; then
-    readonly TRACE=1
-fi
-
-# Terminal Colors
-declare -Agr B=(# Background
-    [B]=$(tput setab 4 2> /dev/null || echo -e "\e[44m") # Blue
-    [C]=$(tput setab 6 2> /dev/null || echo -e "\e[46m") # Cyan
-    [G]=$(tput setab 2 2> /dev/null || echo -e "\e[42m") # Green
-    [K]=$(tput setab 0 2> /dev/null || echo -e "\e[40m") # Black
-    [M]=$(tput setab 5 2> /dev/null || echo -e "\e[45m") # Magenta
-    [R]=$(tput setab 1 2> /dev/null || echo -e "\e[41m") # Red
-    [W]=$(tput setab 7 2> /dev/null || echo -e "\e[47m") # White
-    [Y]=$(tput setab 3 2> /dev/null || echo -e "\e[43m") # Yellow
-)
-declare -Agr F=(# Foreground
-    [B]=$(tput setaf 4 2> /dev/null || echo -e "\e[34m") # Blue
-    [C]=$(tput setaf 6 2> /dev/null || echo -e "\e[36m") # Cyan
-    [G]=$(tput setaf 2 2> /dev/null || echo -e "\e[32m") # Green
-    [K]=$(tput setaf 0 2> /dev/null || echo -e "\e[30m") # Black
-    [M]=$(tput setaf 5 2> /dev/null || echo -e "\e[35m") # Magenta
-    [R]=$(tput setaf 1 2> /dev/null || echo -e "\e[31m") # Red
-    [W]=$(tput setaf 7 2> /dev/null || echo -e "\e[37m") # White
-    [Y]=$(tput setaf 3 2> /dev/null || echo -e "\e[33m") # Yellow
-)
-NC=$(tput sgr0 2> /dev/null || echo -e "\e[0m")
-readonly NC
-
-# Log Functions
-MKTEMP_LOG=$(mktemp) || echo "Failed to create temporary log file."
-readonly MKTEMP_LOG
-echo "DockSTARTer Log" > "${MKTEMP_LOG}"
-log() {
-    local TOTERM=${1:-}
-    local MESSAGE=${2:-}
-    echo -e "${MESSAGE:-}" | (
-        if [[ -n ${TOTERM} ]]; then
-            tee -a "${MKTEMP_LOG}" >&2
-        else
-            cat >> "${MKTEMP_LOG}" 2>&1
-        fi
-    )
-}
-trace() { log "${TRACE:-}" "${NC}$(date +"%F %T") ${F[B]}[TRACE ]${NC}   $*${NC}"; }
-debug() { log "${DEBUG:-}" "${NC}$(date +"%F %T") ${F[B]}[DEBUG ]${NC}   $*${NC}"; }
-info() { log "${VERBOSE:-}" "${NC}$(date +"%F %T") ${F[B]}[INFO  ]${NC}   $*${NC}"; }
-notice() { log "true" "${NC}$(date +"%F %T") ${F[G]}[NOTICE]${NC}   $*${NC}"; }
-warn() { log "true" "${NC}$(date +"%F %T") ${F[Y]}[WARN  ]${NC}   $*${NC}"; }
-error() { log "true" "${NC}$(date +"%F %T") ${F[R]}[ERROR ]${NC}   $*${NC}"; }
-fatal() {
-    log "true" "${NC}$(date +"%F %T") ${B[R]}${F[W]}[FATAL ]${NC}   $*${NC}"
-    exit 1
-}
-
-# User/Group Information
-readonly DETECTED_PUID=${SUDO_UID:-$UID}
-DETECTED_UNAME=$(id -un "${DETECTED_PUID}" 2> /dev/null || true)
-readonly DETECTED_UNAME
-DETECTED_PGID=$(id -g "${DETECTED_PUID}" 2> /dev/null || true)
-readonly DETECTED_PGID
-export DETECTED_PGID
-DETECTED_UGROUP=$(id -gn "${DETECTED_PUID}" 2> /dev/null || true)
-readonly DETECTED_UGROUP
-export DETECTED_UGROUP
-DETECTED_HOMEDIR=$(eval echo "~${DETECTED_UNAME}" 2> /dev/null || true)
-readonly DETECTED_HOMEDIR
-
-# Repo Exists Function
-repo_exists() {
-    if [[ -d ${SCRIPTPATH}/.git ]] && [[ -d ${SCRIPTPATH}/.scripts ]]; then
-        return
-    else
-        return 1
-    fi
-}
-
-# Root Check Function
-root_check() {
-    if [[ ${DETECTED_PUID} == "0" ]] || [[ ${DETECTED_HOMEDIR} == "/root" ]]; then
-        fatal "Running as root is not supported. Please run as a standard user with sudo."
-    fi
-}
-
-# Script Runner Function
-run_script() {
-    local SCRIPTSNAME=${1:-}
-    shift
-    if [[ -f ${SCRIPTPATH}/.scripts/${SCRIPTSNAME}.sh ]]; then
-        # shellcheck source=/dev/null
-        source "${SCRIPTPATH}/.scripts/${SCRIPTSNAME}.sh"
-        ${SCRIPTSNAME} "$@" < /dev/null
-    else
-        fatal "${SCRIPTPATH}/.scripts/${SCRIPTSNAME}.sh not found."
-    fi
-}
-
-# Test Runner Function
-run_test() {
-    local TESTSNAME=${1:-}
-    shift
-    if [[ -f ${SCRIPTPATH}/.scripts/${TESTSNAME}.sh ]]; then
-        if grep -q "test_${TESTSNAME}" "${SCRIPTPATH}/.scripts/${TESTSNAME}.sh"; then
-            notice "Testing ${TESTSNAME}."
-            # shellcheck source=/dev/null
-            source "${SCRIPTPATH}/.scripts/${TESTSNAME}.sh"
-            eval "test_${TESTSNAME}" "$@" < /dev/null || fatal "Failed to run ${TESTSNAME}."
-            notice "Completed testing ${TESTSNAME}."
-        else
-            fatal "Test function in ${SCRIPTPATH}/.scripts/${TESTSNAME}.sh not found."
-        fi
-    else
-        fatal "${SCRIPTPATH}/.scripts/${TESTSNAME}.sh not found."
-    fi
+assert_nameref_is_array() {
+	local type_info
+	type_info=$(declare -p "${1}" 2> /dev/null) || return 0
+	[[ ${type_info} =~ ^declare\ -[a-zA-Z]*a ]] || fatal "Variable '{{|Var|}}${1}{{[-]}}' is a string, expected an array"
 }
 
 # Version Functions
@@ -338,150 +36,1134 @@ vergt() { ! vergte "${2}" "${1}"; }
 verlte() { printf '%s\n%s' "${1}" "${2}" | sort -C -V; }
 verlt() { ! verlte "${2}" "${1}"; }
 
-# Github Token for CI
-if [[ ${CI:-} == true ]] && [[ ${TRAVIS_SECURE_ENV_VARS:-} == true ]]; then
-    readonly GH_HEADER="Authorization: token ${GH_TOKEN}"
-    export GH_HEADER
+# Check for supported bash version
+declare REQUIRED_BASH_VERSION="4"
+if verlt "${BASH_VERSION}" "${REQUIRED_BASH_VERSION}"; then
+	echo "Unsupported bash version."
+	echo "${APPLICATION_NAME} requires at least bash version ${REQUIRED_BASH_VERSION}, installed version is ${BASH_VERSION}."
+	exit 1
 fi
+
+readonly -a ARGS=("$@")
+
+# Github Token for CI
+if [[ ${CI-} == true ]] && [[ ${TRAVIS_SECURE_ENV_VARS-} == true ]]; then
+	readonly GH_HEADER="Authorization: token ${GH_TOKEN}"
+	export GH_HEADER
+fi
+
+declare DS_COMMAND
+DS_COMMAND=$(command -v "${APPLICATION_COMMAND}" || true)
+
+# User/Group Information
+readonly DETECTED_PUID=${SUDO_UID:-$UID}
+export DETECTED_PUID
+DETECTED_UNAME=$(id -un "${DETECTED_PUID}" 2> /dev/null || true)
+readonly DETECTED_UNAME
+export DETECTED_UNAME
+DETECTED_PGID=$(id -g "${DETECTED_PUID}" 2> /dev/null || true)
+readonly DETECTED_PGID
+export DETECTED_PGID
+DETECTED_UGROUP=$(id -gn "${DETECTED_PUID}" 2> /dev/null || true)
+readonly DETECTED_UGROUP
+export DETECTED_UGROUP
+DETECTED_HOMEDIR=$(eval echo "~${DETECTED_UNAME}" 2> /dev/null || true)
+readonly DETECTED_HOMEDIR
+export DETECTED_HOMEDIR
+
+# System Information
+ARCH=$(uname -m)
+if [[ ${ARCH} == arm64 ]]; then
+	ARCH="aarch64"
+fi
+readonly ARCH
+export ARCH
+
+declare -Ag C DC
+
+# Script Information
+# https://stackoverflow.com/questions/59895/get-the-source-directory-of-a-bash-script-from-within-the-script-itself/246128#246128
+get_scriptname() {
+	# https://stackoverflow.com/questions/35006457/choosing-between-0-and-bash-source/35006505#35006505
+	local SOURCE=${BASH_SOURCE[0]:-$0}
+	while [[ -L ${SOURCE} ]]; do # resolve ${SOURCE} until the file is no longer a symlink
+		local DIR
+		DIR=$(cd -P "$(dirname "${SOURCE}")" > /dev/null 2>&1 && pwd)
+		SOURCE=$(readlink "${SOURCE}")
+		[[ ${SOURCE} != /* ]] && SOURCE="${DIR}/${SOURCE}" # if ${SOURCE} was a relative symlink, we need to resolve it relative to the path where the symlink file was located
+	done
+	echo "${SOURCE}"
+}
+
+SCRIPTPATH=$(cd -P "$(dirname "$(get_scriptname)")" > /dev/null 2>&1 && pwd)
+readonly SCRIPTPATH
+export SCRIPTPATH
+SCRIPTNAME="${SCRIPTPATH}/$(basename "$(get_scriptname)")"
+readonly SCRIPTNAME
+export SCRIPTNAME
+
+[[ -z ${XDG_DATA_HOME-} ]] && declare -gx XDG_DATA_HOME="${DETECTED_HOMEDIR}/.local/share"
+[[ -z ${XDG_CONFIG_HOME-} ]] && declare -gx XDG_CONFIG_HOME="${DETECTED_HOMEDIR}/.config"
+[[ -z ${XDG_CACHE_HOME-} ]] && declare -gx XDG_CACHE_HOME="${DETECTED_HOMEDIR}/.cache"
+[[ -z ${XDG_STATE_HOME-} ]] && declare -gx XDG_STATE_HOME="${DETECTED_HOMEDIR}/.local/state"
+#[[ -z ${XDG_RUNTIME_DIR-} ]] && declare -gx XDG_RUNTIME_DIR="/run/user/${DETECTED_PUID}"
+for XDG_FOLDER in "${XDG_DATA_HOME}" "${XDG_CONFIG_HOME}" "${XDG_CONFIG_HOME}/${APPLICATION_NAME,,}" "${XDG_CACHE_HOME}" "${XDG_STATE_HOME}" "${XDG_STATE_HOME}/${APPLICATION_NAME,,}"; do
+	if [[ ! -d ${XDG_FOLDER} ]]; then
+		if [[ -f ${XDG_FOLDER} ]]; then
+			# XDG_FOLDER exists, but it's not a folder, so remove it
+			sudo rm -f "${XDG_FOLDER}"
+		fi
+		mkdir -p "${XDG_FOLDER}"
+		sudo chown "${DETECTED_PUID}":"${DETECTED_PGID}" "${XDG_FOLDER}"
+		sudo chmod 700 "${XDG_FOLDER}"
+	fi
+done
+
+declare -rgx APPLICATION_LOG="${XDG_CONFIG_HOME}/${APPLICATION_NAME,,}/${APPLICATION_NAME,,}.log"
+declare -rgx FATAL_LOG="${XDG_CONFIG_HOME}/${APPLICATION_NAME,,}/${APPLICATION_NAME,,}.fatal.log"
+
+declare -rgx APPLICATION_UPDATE_RECORD="${XDG_STATE_HOME}/${APPLICATION_NAME,,}/${APPLICATION_NAME,,}.updated"
+declare -Agx ColorCodes=(
+	[black]=K [red]=R [green]=G [yellow]=Y
+	[blue]=B [magenta]=M [cyan]=C [white]=W
+)
+
+resolve_styles() {
+	local _rs_val_
+	resolve_styles_into _rs_val_ "$@"
+	printf '%s\n' "${_rs_val_}"
+}
+
+resolve_styles_into() {
+	local -n _rsi_out_="${1}"
+	assert_nameref_is_string "${1}"
+	local style_map_name="${2}"
+	local -n style_map="${2}"
+	local val="${3}"
+	local last_val=""
+	local -i MaxResolves=100
+
+	local sem_p="${4-}" sem_s="${5-}"
+	local dir_p="${6-}" dir_s="${7-}"
+
+	while [[ ${MaxResolves} -gt 0 ]]; do
+		local regex p_tag content s_tag full_match
+		if [[ -n ${sem_p-} ]]; then
+			# Custom syntax
+			local esc_sem_p="${sem_p//\[/\\\[}"
+			esc_sem_p="${esc_sem_p//\|/\\|}"
+			esc_sem_p="${esc_sem_p//\{/\\\{}"
+			local esc_sem_s="${sem_s//\]/\\\]}"
+			esc_sem_s="${esc_sem_s//\|/\\|}"
+			esc_sem_s="${esc_sem_s//\}/\\\}}"
+			local esc_dir_p="${dir_p//\[/\\\[}"
+			esc_dir_p="${esc_dir_p//\|/\\|}"
+			esc_dir_p="${esc_dir_p//\{/\\\{}"
+			local esc_dir_s="${dir_s//\]/\\\]}"
+			esc_dir_s="${esc_dir_s//\|/\\|}"
+			esc_dir_s="${esc_dir_s//\}/\\\}}"
+			regex="(${esc_sem_p}|${esc_dir_p})([^]|}]*)(${esc_sem_s}|${esc_dir_s})"
+
+			[[ ${val} =~ ${regex} ]] || break
+			full_match="${BASH_REMATCH[0]}"
+			p_tag="${BASH_REMATCH[1]}"
+			content="${BASH_REMATCH[2]}"
+			s_tag="${BASH_REMATCH[3]}"
+
+			# Ensure matching prefix/suffix types
+			if [[ ${p_tag} == "${sem_p}" && ${s_tag} == "${sem_s}" ]]; then
+				if [[ ${content} == *":"* ]]; then
+					local base="${content%%:*}"
+					local mod="${content#*:}"
+					val="${val//"${full_match}"/"${sem_p}${base}${sem_s}${dir_p}${mod}${dir_s}"}"
+					continue
+				fi
+			elif [[ ${p_tag} != "${dir_p}" || ${s_tag} != "${dir_s}" ]]; then
+				# Mismatched tags
+				break
+			fi
+		else
+			# Default syntax: {{|...|}} or {{[...]}}
+			regex='\{\{(\[|\|)([^]|}]*)(\]|\|)\}\}'
+			[[ ${val} =~ ${regex} ]] || break
+			full_match="${BASH_REMATCH[0]}"
+			local type="${BASH_REMATCH[1]}"
+			content="${BASH_REMATCH[2]}"
+			local end_type="${BASH_REMATCH[3]}"
+
+			# Ensure matching start/end types (| with | and [ with ])
+			if [[ ${type} == "|" && ${end_type} == "|" ]]; then
+				p_tag="${type}"
+				s_tag="${end_type}"
+				if [[ ${content} == *":"* ]]; then
+					local base="${content%%:*}"
+					local mod="${content#*:}"
+					val="${val//"${full_match}"/"{{|${base}|}}{{[${mod}]}}"}"
+					continue
+				fi
+			elif [[ ${type} == "[" && ${end_type} == "]" ]]; then
+				p_tag="${type}"
+				s_tag="${end_type}"
+			else
+				break
+			fi
+		fi
+
+		[[ ${val} == "${last_val}" ]] && break
+		MaxResolves=$((MaxResolves - 1))
+		last_val="${val}"
+
+		local replacement=""
+		if [[ ${p_tag} == "|" || ${p_tag} == "${sem_p-}" ]]; then
+			# Semantic tag: lookup in map (Raw key)
+			if [[ -v style_map["${content}"] ]]; then
+				replacement="${style_map["${content}"]}"
+			fi
+		elif [[ ${p_tag} == "[" || ${p_tag} == "${dir_p-}" ]]; then
+			# Direct tag: Dynamic parsing for {{[...]}} or custom direct tags
+			local fg="" bg="" flags="" resolved=""
+			if [[ ${content} == "-" ]]; then
+				# Reset tag
+				if [[ ${style_map_name} == "DC" ]]; then
+					resolved='\Zn'
+				else
+					resolved="${S["-"]}"
+				fi
+			else
+				# Parse [fg:bg:flags]
+				if [[ ${content} == *":"* ]]; then
+					fg="${content%%:*}"
+					local rest="${content#*:}"
+					if [[ ${rest} == *":"* ]]; then
+						bg="${rest%%:*}"
+						flags="${rest#*:}"
+					else
+						bg="${rest}"
+						flags=""
+					fi
+				else
+					# Single part tag: is it a color name or a code or a flag?
+					local content_lower="${content,,}"
+					local content_upper="${content^^}"
+					if [[ -v ColorCodes[${content_lower}] ]]; then
+						fg="${content_lower}"
+					elif [[ -v F[${content_upper}] ]]; then
+						fg="${content_upper}"
+					else
+						flags="${content}"
+					fi
+				fi
+
+				# Resolve FG, BG, Flags
+				local -A ZC=([K]=0 [R]=1 [G]=2 [Y]=3 [B]=4 [M]=5 [C]=6 [W]=7)
+				if [[ -n ${fg} ]]; then
+					local fg_code="${ColorCodes[${fg,,}]-${fg^^}}"
+					if [[ ${style_map_name} == "DC" ]]; then
+						resolved+="\Z${ZC[${fg_code}]-0}"
+					elif [[ -v F[${fg_code}] ]]; then
+						resolved+="${F[${fg_code}]}"
+					fi
+				fi
+				if [[ -n ${bg} ]]; then
+					local bg_code="${ColorCodes[${bg,,}]-${bg^^}}"
+					if [[ ${style_map_name} == "DC" ]]; then
+						resolved+="\z${ZC[${bg_code}]-0}"
+					elif [[ -v B[${bg_code}] ]]; then
+						resolved+="${B[${bg_code}]}"
+					fi
+				fi
+				if [[ -n ${flags} ]]; then
+					local -i k
+					for ((k = 0; k < ${#flags}; k++)); do
+						local char="${flags:k:1}"
+						if [[ ${style_map_name} == "DC" ]]; then
+							case ${char} in
+								B) resolved+='\Zb' ;;
+								D) resolved+='\Zd' ;;
+								L) resolved+='\Zl' ;;
+								R) resolved+='\Zr' ;;
+								U) resolved+='\Zu' ;;
+							esac
+						elif [[ -v S[${char}] ]]; then
+							resolved+="${S[${char}]}"
+						fi
+					done
+				fi
+			fi
+			replacement="${resolved}"
+		fi
+		val="${val//"${full_match}"/"${replacement}"}"
+	done
+	_rsi_out_="${val}"
+}
+
+resolve_strings() {
+	local array_name="$1"
+	shift
+
+	local _rs_line_ _rs_out_
+	_resolve_strings_line_() {
+		if [[ -t 1 ]]; then
+			resolve_styles_into _rs_out_ "${array_name}" "${_rs_line_}"
+		else
+			strip_styles_into _rs_out_ "${_rs_line_}"
+		fi
+		printf '%s\n' "${_rs_out_}"
+	}
+
+	# Process every argument (and every line within those arguments), or read from STDIN if no arguments
+	if [[ $# -gt 0 ]]; then
+		local arg
+		for arg in "$@"; do
+			while IFS= read -r _rs_line_; do
+				_resolve_strings_line_
+			done <<< "${arg}"
+		done
+	else
+		while IFS= read -r _rs_line_ || [[ -n ${_rs_line_} ]]; do
+			_resolve_strings_line_
+		done
+	fi
+}
+
+strip_styles() {
+	local _ss_val_
+	strip_styles_into _ss_val_ "${1:-}"
+	printf '%s\n' "${_ss_val_}"
+}
+
+strip_styles_into() {
+	local -n _ssi_out_="${1}"
+	assert_nameref_is_string "${1}"
+	local _ssi_val_="${2:-}"
+	local _ssi_extglob_=0
+	shopt -q extglob || _ssi_extglob_=$?
+	shopt -s extglob
+	local _ssi_line_ _ssi_result_=""
+	while IFS= read -r _ssi_line_; do
+		_ssi_line_="${_ssi_line_//\{\{\|*([!|])|\}\}/}"
+		_ssi_line_="${_ssi_line_//\{\{\[*([!\]])\]\}\}/}"
+		_ssi_result_+="${_ssi_line_}"$'\n'
+	done <<< "${_ssi_val_}"
+	_ssi_result_="${_ssi_result_%$'\n'}"
+	[[ ${_ssi_extglob_} -ne 0 ]] && shopt -u extglob || true
+	_ssi_out_="${_ssi_result_}"
+}
+
+# shellcheck disable=SC2120
+strip_strings() {
+	# Process every argument (and every line within those arguments), or read from STDIN if no arguments
+	if [[ $# -gt 0 ]]; then
+		printf '%s\n' "$@"
+	else
+		cat
+	fi | while IFS= read -r line || [[ -n ${line} ]]; do
+		# Call the single-string stripper for each line
+		strip_styles "$line"
+	done
+}
+
+# Terminal Colors
+declare -Agr B=( # Background
+	[B]=$(tput setab 4 2> /dev/null || echo -e "\e[44m")   # Blue
+	[C]=$(tput setab 6 2> /dev/null || echo -e "\e[46m")   # Cyan
+	[G]=$(tput setab 2 2> /dev/null || echo -e "\e[42m")   # Green
+	[K]=$(tput setab 0 2> /dev/null || echo -e "\e[40m")   # Black
+	[M]=$(tput setab 5 2> /dev/null || echo -e "\e[45m")   # Magenta
+	[R]=$(tput setab 1 2> /dev/null || echo -e "\e[41m")   # Red
+	[W]=$(tput setab 7 2> /dev/null || echo -e "\e[47m")   # White
+	[Y]=$(tput setab 3 2> /dev/null || echo -e "\e[43m")   # Yellow
+	["-"]=$(tput setab 9 2> /dev/null || echo -e "\e[49m") # Default
+)
+declare -Agr F=( # Foreground
+	[B]=$(tput setaf 4 2> /dev/null || echo -e "\e[34m")   # Blue
+	[C]=$(tput setaf 6 2> /dev/null || echo -e "\e[36m")   # Cyan
+	[G]=$(tput setaf 2 2> /dev/null || echo -e "\e[32m")   # Green
+	[K]=$(tput setaf 0 2> /dev/null || echo -e "\e[30m")   # Black
+	[M]=$(tput setaf 5 2> /dev/null || echo -e "\e[35m")   # Magenta
+	[R]=$(tput setaf 1 2> /dev/null || echo -e "\e[31m")   # Red
+	[W]=$(tput setaf 7 2> /dev/null || echo -e "\e[37m")   # White
+	[Y]=$(tput setaf 3 2> /dev/null || echo -e "\e[33m")   # Yellow
+	["-"]=$(tput setaf 9 2> /dev/null || echo -e "\e[39m") # Default
+)
+declare -Agr S=(
+	[BS]=$(tput cup 1000 0 2> /dev/null || true)       # Bottom of screen
+	["-"]=$(tput sgr0 2> /dev/null || echo -e "\e[0m") # No Color
+	[D]=$(tput dim 2> /dev/null || echo -e "\e[2m")    # Dim
+	[d]=$(tput sgr0 2> /dev/null || echo -e "\e[0m")   # No Dim
+	[L]=$(tput blink 2> /dev/null || echo -e "\e[5m")  # Blink
+	[l]=$(tput sgr0 2> /dev/null || echo -e "\e[0m")   # No Blink
+	[B]=$(tput bold 2> /dev/null || echo -e "\e[1m")   # Bold
+	[b]=$(tput sgr0 2> /dev/null || echo -e "\e[0m")   # No Bold
+	[U]=$(tput smul 2> /dev/null || echo -e "\e[4m")   # Underline
+	[u]=$(tput rmul 2> /dev/null || echo -e "\e[24m")  # No Underline
+	[R]=$(tput rev 2> /dev/null || echo -e "\e[7m")    # Reverse Video
+	[r]=$(tput sgr0 2> /dev/null || echo -e "\e[0m")   # No Reverse Video
+)
+
+DM="${S[D]}"
+readonly DM
+export DM
+BL="${S[L]}"
+readonly BL
+export BL
+BD="${S[B]}"
+readonly BD
+export BD
+UL="${S[U]}"
+readonly UL
+export UL
+NC="${S["-"]}"
+readonly NC
+export NC
+BS="${S[BS]}"
+readonly BS
+export BS
+
+declare -Ag C=( # Pre-defined colors
+	[Timestamp]="{{[::D]}}"
+	[Trace]="{{[blue]}}"
+	[Debug]="{{[blue]}}"
+	[Info]="{{[blue]}}"
+	[Notice]="{{[green]}}"
+	[Warn]="{{[yellow]}}"
+	[Error]="{{[red]}}"
+	[Fatal]="{{[white]}}{{[:red]}}"
+
+	[FatalFooter]="{{[-]}}"
+	[TraceHeader]="{{[red]}}"
+	[TraceFooter]="{{[red]}}"
+	[TraceFrameNumber]="{{[red]}}"
+	[TraceFrameLines]="{{[red]}}"
+	[TraceSourceFile]="{{[cyan]}}{{[::B]}}"
+	[TraceLineNumber]="{{[yellow]}}{{[::B]}}"
+	[TraceFunction]="{{[green]}}{{[::B]}}"
+	[TraceCmd]="{{[green]}}{{[::B]}}"
+	[TraceCmdArgs]="{{[green]}}"
+
+	[UnitTestPass]="{{[green]}}"
+	[UnitTestFail]="{{[red]}}"
+	[UnitTestFailArrow]="{{[red]}}"
+
+	[App]="{{[cyan]}}"
+	[ApplicationName]="{{[cyan]}}{{[::B]}}"
+	[Branch]="{{[cyan]}}"
+	[FailingCommand]="{{[red]}}"
+	[File]="{{[cyan]}}{{[::B]}}"
+	[Folder]="{{[cyan]}}{{[::B]}}"
+	[Program]="{{[cyan]}}"
+	[RunningCommand]="{{[green]}}{{[::B]}}"
+	[Theme]="{{[cyan]}}"
+	[Update]="{{[green]}}"
+	[User]="{{[cyan]}}"
+	[URL]="{{[cyan]}}{{[::U]}}"
+	[UserCommand]="{{[yellow]}}{{[::B]}}"
+	[UserCommandError]="{{[red]}}{{[::U]}}"
+	[UserCommandErrorMarker]="{{[red]}}"
+	[Var]="{{[magenta]}}"
+	[Version]="{{[cyan]}}"
+	[Yes]="{{[green]}}"
+	[No]="{{[red]}}"
+
+	[ButtonName]="{{[cyan]}}"
+
+	[UsageCommand]="{{[yellow]}}{{[::B]}}"
+	[UsageOption]="{{[yellow]}}"
+	[UsageApp]="{{[cyan]}}"
+	[UsageBranch]="{{[cyan]}}"
+	[UsageFile]="{{[cyan]}}{{[::B]}}"
+	[UsagePage]="{{[cyan]}}{{[::B]}}"
+	[UsageTheme]="{{[cyan]}}"
+	[UsageVar]="{{[magenta]}}"
+)
+
+for Style in "${!C[@]}"; do
+	resolve_styles_into C["$Style"] C "${C["$Style"]}"
+done
+# C must not be readonly so that dynamic styles can be cached!
+
+indent_text() {
+	local -i IndentSize=${1}
+	shift
+	local IndentString
+	printf -v IndentString "%*s" "${IndentSize}" ""
+	local line
+	while IFS= read -r line; do
+		printf '%s%s\n' "${IndentString}" "${line}"
+	done <<< "$(printf '%s\n' "$@")"
+}
+
+indent_string_pipe() {
+	local -i IndentSize=${1}
+	indent_text ${IndentSize} "$(cat -)"
+}
+
+get_system_info() {
+	local -a Output=()
+
+	Output+=(
+		"{{|ApplicationName|}}${APPLICATION_NAME-}{{[-]}} [{{|Version|}}${APPLICATION_VERSION-}{{[-]}}]"
+		"{{|ApplicationName|}}${TEMPLATES_NAME-}{{[-]}} [{{|Version|}}${TEMPLATES_VERSION-}{{[-]}}]"
+		""
+		"Currently running as: $0 (PID $$)"
+		"Shell name from /proc/$$/exe: $(readlink /proc/$$/exe)"
+		""
+		"ARCH:             ${ARCH-}"
+		"SCRIPTPATH:       ${SCRIPTPATH-}"
+		"SCRIPTNAME:       ${SCRIPTNAME-}"
+		"COMPOSE_FOLDER:   ${COMPOSE_FOLDER-}"
+		"CONFIG_FOLDER:    ${CONFIG_FOLDER-}"
+		""
+		"APPLICATION_INI_FILE: ${APPLICATION_INI_FILE-}"
+		"DETECTED_PUID:    ${DETECTED_PUID-}"
+		"DETECTED_UNAME:   ${DETECTED_UNAME-}"
+		"DETECTED_PGID:    ${DETECTED_PGID-}"
+		"DETECTED_UGROUP:  ${DETECTED_UGROUP-}"
+		"DETECTED_HOMEDIR: ${DETECTED_HOMEDIR-}"
+	)
+
+	# shellcheck disable=SC2016 # Expressions don't expand in single quotes, use double quotes for that.
+	Output+=(
+		""
+		'{{|RunningCommand|}}echo ${BASH_VERSION}{{[-]}}:'
+		"${BASH_VERSION-}"
+	)
+
+	[[ -f /etc/os-release ]] &&
+		Output+=(
+			""
+			"{{|RunningCommand|}}cat /etc/os-release{{[-]}}:"
+			"$(PrefixFileLines '  ' /etc/os-release)"
+		)
+
+	printf '%s\n' "${Output[@]}"
+}
+
+# Log Functions
+MKTEMP_LOG=$(mktemp -t "${APPLICATION_NAME,,}.log.XXXXXXXXXX") || resolve_strings C "Failed to create temporary log file." "Failing command: {{|FailingCommand|}}mktemp -t \"${APPLICATION_NAME,,}.log.XXXXXXXXXX\""
+readonly MKTEMP_LOG
+echo "${APPLICATION_NAME} Log" > "${MKTEMP_LOG}"
+
+log() {
+	local LogToTerminal=${1-}
+	local Message=${2-}
+	local StrippedMessage
+	strip_styles_into StrippedMessage "${Message-}"
+	if [[ ${LogToTerminal} == true ]]; then
+		if [[ -t 2 ]]; then
+			# Stderr is a TTY, output with color
+			resolve_strings C "${Message}" >&2
+		else
+			# Stderr is being redirected, output without color
+			printf '%s\n' "${StrippedMessage}" >&2
+		fi
+	fi
+	# Output the message to the log file without color
+	printf '%s\n' "${StrippedMessage}" >> "${MKTEMP_LOG}" || true
+}
+timestamped_log_into() {
+	local -n _tli_out_="${1}"
+	assert_nameref_is_string "${1}"
+	local _tli_LogLevelTag_="${2-}"
+	shift 2
+	local _tli_LogMessage_
+	printf -v _tli_LogMessage_ '%b\n' "$@"
+	_tli_LogMessage_="${_tli_LogMessage_%$'\n'}"
+	local _tli_Timestamp_
+	printf -v _tli_Timestamp_ '%(%F %T)T' -1
+	local _tli_result_="" _tli_line_ _tli_formatted_line_
+	while IFS= read -r _tli_line_; do
+		printf -v _tli_formatted_line_ "{{[-]}}{{|Timestamp|}}${_tli_Timestamp_}{{[-]}} ${_tli_LogLevelTag_} %s{{[-]}}\n" "${_tli_line_}"
+		_tli_result_+="${_tli_formatted_line_}"
+	done <<< "${_tli_LogMessage_}"
+	_tli_out_="${_tli_result_%$'\n'}"
+}
+timestamped_log() {
+	local _tl_result_
+	timestamped_log_into _tl_result_ "$@"
+	printf '%s\n' "${_tl_result_}"
+}
+trace() {
+	local _msg_
+	timestamped_log_into _msg_ "{{|Trace|}}[TRACE ]{{[-]}}" "$@"
+	log "${TRACE-}" "${_msg_}"
+}
+debug() {
+	local _msg_
+	timestamped_log_into _msg_ "{{|Debug|}}[DEBUG ]{{[-]}}" "$@"
+	log "${DEBUG-}" "${_msg_}"
+}
+info() {
+	local _msg_
+	timestamped_log_into _msg_ "{{|Info|}}[INFO  ]{{[-]}}" "$@"
+	log "${VERBOSE-}" "${_msg_}"
+}
+notice() {
+	local _msg_
+	timestamped_log_into _msg_ "{{|Notice|}}[NOTICE]{{[-]}}" "$@"
+	log true "${_msg_}"
+}
+warn() {
+	local _msg_
+	timestamped_log_into _msg_ "{{|Warn|}}[WARN  ]{{[-]}}" "$@"
+	log true "${_msg_}"
+}
+error() {
+	local _msg_
+	timestamped_log_into _msg_ "{{|Error|}}[ERROR ]{{[-]}}" "$@"
+	log true "${_msg_}"
+}
+fatal_notrace() {
+	local LogMessage
+	timestamped_log_into LogMessage "{{|Fatal|}}[FATAL ]{{[-]}}" "$@"
+	log true "${LogMessage}"
+	strip_styles_into LogMessage "${LogMessage-}"
+	printf '%s\n' "${LogMessage}" > "${FATAL_LOG}" || true
+	exit 1
+}
+fatal() {
+	local -i thisFuncLine=$((LINENO - 1))
+
+	local -a Stack=()
+
+	readarray -t Stack < <(get_system_info)
+	Stack+=("")
+
+	local -i StackSize=${#FUNCNAME[@]}
+	local -i FrameNumberLength=${#StackSize}
+	local NoFile="<nofile>"
+	local NoFunction="<nofunction>"
+
+	# Pre-calculate Arg Offsets for LIFO BASH_ARGV (with extdebug)
+	local -a ArgOffsets=()
+	local -i Offset=0
+	local -i j
+	for ((j = 0; j < StackSize; j++)); do
+		ArgOffsets[j]=${Offset}
+		Offset+=${BASH_ARGC[j]-0}
+	done
+
+	local indent=""
+	local -i i
+	for ((i = StackSize - 1; i >= 0; i--)); do
+		local func="${FUNCNAME[i]:-$NoFunction}"
+		local SourceFile="${BASH_SOURCE[i]:-$NoFile}"
+		local -i line="${thisFuncLine}"
+		if ((i > 0)); then
+			line="${BASH_LINENO[i - 1]:-0}"
+		fi
+
+		local prefix=""
+		local arrowIndent="${indent}"
+		if ((i < StackSize - 1)); then
+			prefix="{{|TraceFrameLines|}}└>{{[-]}}"
+			if [[ ${#indent} -ge 2 ]]; then
+				arrowIndent="${indent%  }"
+			fi
+		fi
+
+		# Format: "Num: [Indent]Arrow File:Line (Function)"
+		local StackLineFormat="{{|TraceFrameNumber|}}%${FrameNumberLength}d{{[-]}}: ${arrowIndent}${prefix}{{|TraceSourceFile|}}%s{{[-]}}:{{|TraceLineNumber|}}%d{{[-]}} ({{|TraceFunction|}}%s{{[-]}})"
+		# shellcheck disable=SC2059 # Dynamic format string for padding
+		Stack+=(
+			"$(printf "${StackLineFormat}" "${i}" "${SourceFile##*/}" "${line}" "${func}")"
+		)
+
+		# Command and Arguments for this frame (Show what this frame CALLED)
+		if ((i > 0)); then
+			local next_i=$((i - 1))
+			local cmd="${FUNCNAME[next_i]:-$NoFunction}"
+			local -i CmdArgCount=${BASH_ARGC[next_i]-0}
+			local -i CurrentArg=${ArgOffsets[next_i]-0}
+
+			local FrameCmdPrefix="{{|TraceFrameLines|}}│{{[-]}}"
+			local FrameArgPrefix="{{|TraceFrameLines|}}│{{[-]}}"
+
+			local cmdString="{{|TraceCmd|}}${cmd}{{[-]}}"
+			local -a cmdArray=()
+			cmdArray+=("${FrameCmdPrefix}${cmdString}")
+
+			if [[ CmdArgCount -ne 0 ]]; then
+				for ((j = CurrentArg + CmdArgCount - 1; j >= CurrentArg; j--)); do
+					local cmdArgString="${BASH_ARGV[$j]}"
+					#cmdArgString="$(strip_styles "${cmdArgString}")"
+					cmdArgString="${cmdArgString//\\/\\\\}"
+					cmdArgString="{{[-]}}«{{|TraceCmdArgs|}}${cmdArgString}{{[-]}}»"
+					while read -r cmdLine; do
+						cmdArray+=(
+							"${FrameArgPrefix}{{|TraceCmdArgs|}}${cmdLine}"
+						)
+					done <<< "${cmdArgString}"
+				done
+			fi
+
+			# Align command block with the start of the frame text
+			local -i StackCmdIndent=$((FrameNumberLength + 2 + ${#indent}))
+			Stack+=(
+				"$(indent_text ${StackCmdIndent} "${cmdArray[@]}")"
+			)
+		fi
+
+		indent+="  "
+	done
+
+	fatal_notrace \
+		"{{|TraceHeader|}}### BEGIN SYSTEM INFORMATION AND STACK TRACE ###" \
+		"$(indent_text 2 "${Stack[@]}")" \
+		"{{|TraceFooter|}}### END SYSTEM INFORMATION AND STACK TRACE ###" \
+		"" \
+		"$@" \
+		"" \
+		"{{|FatalFooter|}}Please let the dev know of this error." \
+		"{{|FatalFooter|}}It has been written to '{{|File|}}${FATAL_LOG}{{|FatalFooter|}}'," \
+		"{{|FatalFooter|}}and appended to '{{|File|}}${APPLICATION_LOG}{{|FatalFooter|}}'."
+}
+
+PrefixFileLines() {
+	local Prefix="${1}"
+	local FileName="${2}"
+	local line
+	while IFS= read -r line || [[ -n ${line} ]]; do
+		printf '%s%s\n' "${Prefix}" "${line}"
+	done < "${FileName}"
+}
+
+RunAndLog() {
+	# RunAndLog [RunningNoticeType] [Prefix:[OutputNoticeType]] [ErrorNoticeType] [ErrorMessage] [Command]
+	# To skip an optional argument, pass an empty string
+	local -l RunningNoticeType=${1-}
+	local -l OutputNoticeType=${2-}
+	local -l ErrorNoticeType=${3-}
+	local ErrorMessage=${4-}
+	shift 4
+	local -a Command=("${@}")
+
+	local NoticeTypes_Regex='info|notice|warn|error|debug|trace'
+
+	local Prefix=''
+	if [[ ${OutputNoticeType} == *:* ]]; then
+		Prefix="${OutputNoticeType%%:*}:"
+		OutputNoticeType=${OutputNoticeType#"${Prefix}"}
+		Prefix="\t{{|RunningCommand|}}${Prefix}{{[-]}} "
+	fi
+
+	local OutputFile
+
+	local CommandText
+	CommandText="$(printf '%q ' "${Command[@]}" | xargs 2> /dev/null)"
+
+	# If the running notice type is set, log the command being run
+	[[ -n ${RunningNoticeType-} ]] &&
+		"${RunningNoticeType}" \
+			"Running: {{|RunningCommand|}}${CommandText}"
+
+	local ErrToNull=false
+	local OutToNull=false
+	if [[ ${OutputNoticeType-} =~ errtonull|bothtonull ]]; then
+		ErrToNull=true
+	fi
+	if [[ ${OutputNoticeType-} =~ outtonull|bothtonull ]]; then
+		OutToNull=true
+	fi
+	if [[ ${ErrToNull} != true || ${OutToNull} != true ]] && [[ ${OutputNoticeType-} =~ ${NoticeTypes_Regex} ]]; then
+		# If the output notice type is set, save the output to a file
+		OutputFile=$(mktemp -t "${APPLICATION_NAME}.${FUNCNAME[0]}.RunAndLogOutputFile.XXXXXXXXXX")
+	fi
+	local -i result=0
+	if [[ ${ErrToNull} == true && ${OutToNull} == true ]]; then
+		# Both stdout and stderr are redirected to /dev/null
+		"${Command[@]}" &> /dev/null || result=$?
+	elif [[ ${ErrToNull} == true && -n ${OutputFile-} ]]; then
+		# stderr redircted to /dev/null, stdout redirected to output file
+		"${Command[@]}" > "${OutputFile}" 2> /dev/null || result=$?
+	elif [[ ${OutToNull} == true && -n ${OutputFile-} ]]; then
+		# stdout redircted to /dev/null, stderr redirected to output file
+		"${Command[@]}" 2> "${OutputFile}" > /dev/null || result=$?
+	elif [[ -n ${OutputFile-} ]]; then
+		# Both stdout and stderr redirected to output file
+		"${Command[@]}" &> "${OutputFile}" || result=$?
+	else
+		# No redirection
+		"${Command[@]}" || result=$?
+	fi
+
+	if [[ -n ${OutputFile-} && -s ${OutputFile} ]]; then
+		local line
+		while IFS= read -r line || [[ -n ${line} ]]; do
+			"${OutputNoticeType}" "${Prefix}${line}"
+		done < "${OutputFile}"
+		rm -f "${OutputFile}"
+	fi
+
+	[[ ${result} -eq 0 ]] && return
+
+	if [[ -n ${ErrorNoticeType-} ]]; then
+		# If the error notice type is set, log the error
+		${ErrorNoticeType} \
+			"${ErrorMessage}" \
+			"Failing command: {{|FailingCommand|}}${CommandText}"
+	fi
+	return ${result}
+}
+
+[[ -f "${SCRIPTPATH}/includes/misc_functions.sh" ]] && source "${SCRIPTPATH}/includes/misc_functions.sh"
+[[ -f "${SCRIPTPATH}/includes/global_variables.sh" ]] && source "${SCRIPTPATH}/includes/global_variables.sh"
+[[ -f "${SCRIPTPATH}/includes/migration_functions.sh" ]] && source "${SCRIPTPATH}/includes/migration_functions.sh"
+if declare -F MigrateFilesAndFolders > /dev/null; then
+	MigrateFilesAndFolders
+fi
+[[ -f "${SCRIPTPATH}/includes/pm_variables.sh" ]] && source "${SCRIPTPATH}/includes/pm_variables.sh"
+[[ -f "${SCRIPTPATH}/includes/run_script.sh" ]] && source "${SCRIPTPATH}/includes/run_script.sh"
+[[ -f "${SCRIPTPATH}/includes/tui_functions.sh" ]] && source "${SCRIPTPATH}/includes/tui_functions.sh"
+[[ -f "${SCRIPTPATH}/includes/ds_functions.sh" ]] && source "${SCRIPTPATH}/includes/ds_functions.sh"
+[[ -f "${SCRIPTPATH}/includes/test_functions.sh" ]] && source "${SCRIPTPATH}/includes/test_functions.sh"
+[[ -f "${SCRIPTPATH}/includes/usage.sh" ]] && source "${SCRIPTPATH}/includes/usage.sh"
+[[ -f "${SCRIPTPATH}/includes/cmdline.sh" ]] && source "${SCRIPTPATH}/includes/cmdline.sh"
+
+# Check for supported CPU architecture
+check_arch() {
+	if [[ ${ARCH} != "arm64" ]] && [[ ${ARCH} != "aarch64" ]] && [[ ${ARCH} != "x86_64" ]]; then
+		fatal_notrace \
+			"Unsupported architecture." \
+			"Supported architectures are 'aarch64' or 'x86_64', running architecture is '${ARCH}'."
+	fi
+}
+
+# Check if the repo exists relative to the SCRIPTPATH
+check_repo() {
+	if RunAndLog info "git:info" "" "" git -C "${SCRIPTPATH}" rev-parse --is-inside-work-tree; then
+		if [[ -d ${SCRIPTPATH}/includes ]] && [[ -d ${SCRIPTPATH}/scripts ]]; then
+			return
+		else
+			return 1
+		fi
+	else
+		return 1
+	fi
+}
+
+# Check if the templates repo exists relative to the ${TEMPLATES_PARENT_FOLDER}
+check_templates_repo() {
+	if RunAndLog info "git:info" "" "" git -C "${TEMPLATES_PARENT_FOLDER}" rev-parse --is-inside-work-tree; then
+		return
+	else
+		return 1
+	fi
+}
+# Check if running as root
+check_root() {
+	if [[ ${DETECTED_PUID} == "0" ]] || [[ ${DETECTED_HOMEDIR} == "/root" ]]; then
+		fatal_notrace \
+			"Running as '{{|User|}}root{{[-]}}' is not supported." \
+			"Please run as a standard user."
+	fi
+}
+
+# Check if running with sudo
+check_sudo() {
+	if [[ ${EUID} -eq 0 ]]; then
+		fatal_notrace \
+			"Running with '{{|UserCommand|}}sudo{{[-]}}' is not supported." \
+			"Commands requiring '{{|UserCommand|}}sudo{{[-]}}' will prompt automatically when required."
+	fi
+}
+clone_repo() {
+	warn \
+		"Attempting to clone {{|ApplicationName|}}${APPLICATION_NAME}{{[-]}} repo to '{{|Folder|}}${DETECTED_HOMEDIR}/${APPLICATION_FOLDER_NAME_DEFAULT}{{[-]}}' location."
+	RunAndLog notice "git:notice" \
+		fatal "Failed to clone {{|ApplicationName|}}${APPLICATION_NAME}{{[-]}} repo." \
+		git clone -b "${APPLICATION_DEFAULT_BRANCH}" "${APPLICATION_REPO}" "${DETECTED_HOMEDIR}/${APPLICATION_FOLDER_NAME_DEFAULT}"
+
+	# This bootstrap copy runs from outside the cloned repo, so
+	# includes/ds_functions.sh isn't sourced yet -- use plain git directly.
+	local ClonedGitPath="${DETECTED_HOMEDIR}/${APPLICATION_FOLDER_NAME_DEFAULT}"
+	local ClonedVersion
+	ClonedVersion="$(git -C "${ClonedGitPath}" describe --tags --exact-match 2> /dev/null || true)"
+	if [[ -z ${ClonedVersion} ]]; then
+		ClonedVersion="${APPLICATION_DEFAULT_BRANCH} commit $(git -C "${ClonedGitPath}" rev-parse --short HEAD 2> /dev/null)"
+	fi
+	notice "Cloned {{|ApplicationName|}}${APPLICATION_NAME}{{[-]}} at '{{|Version|}}${ClonedVersion}{{[-]}}'."
+
+	local LatestTag
+	LatestTag="$(git -C "${ClonedGitPath}" tag --merged "origin/${APPLICATION_DEFAULT_BRANCH}" --sort=-creatordate 2> /dev/null | head -1)" || true
+	if [[ -n ${LatestTag} ]]; then
+		local TagHash HeadHash
+		TagHash="$(git -C "${ClonedGitPath}" rev-parse --quiet --verify "${LatestTag}^{commit}" 2> /dev/null)" || true
+		HeadHash="$(git -C "${ClonedGitPath}" rev-parse --quiet --verify HEAD 2> /dev/null)" || true
+		if [[ -z ${TagHash} || ${TagHash} != "${HeadHash}" ]]; then
+			notice "Checking out {{|ApplicationName|}}${APPLICATION_NAME}{{[-]}} release '{{|Version|}}${LatestTag}{{[-]}}'"
+			RunAndLog info "git:info" \
+				fatal "Failed to switch to github ref '{{|Branch|}}${LatestTag}{{[-]}}'." \
+				git -C "${ClonedGitPath}" checkout --force "${LatestTag}"
+		fi
+	fi
+
+	if [[ ${#ARGS[@]} -eq 0 ]]; then
+		notice \
+			"Performing first run install."
+		exec bash "${DETECTED_HOMEDIR}/${APPLICATION_FOLDER_NAME_DEFAULT}/main.sh" -yvi --config-show
+	else
+		exec bash "${DETECTED_HOMEDIR}/${APPLICATION_FOLDER_NAME_DEFAULT}/main.sh" "${ARGS[@]}"
+	fi
+}
+
+clone_templates_repo() {
+	warn \
+		"Attempting to clone {{|ApplicationName|}}${TEMPLATES_NAME}{{[-]}} repo to '{{|Folder|}}${TEMPLATES_PARENT_FOLDER}{{[-]}}' location."
+	if [[ -d ${TEMPLATES_PARENT_FOLDER?} ]]; then
+		RunAndLog notice "rm:notice" \
+			fatal "Failed to remove ${TEMPLATES_PARENT_FOLDER?}." \
+			sudo rm -rf "${TEMPLATES_PARENT_FOLDER?}"
+	fi
+	RunAndLog notice "git:notice" \
+		fatal "Failed to clone {{|ApplicationName|}}${TEMPLATES_NAME}{{[-]}} repo." \
+		git clone -b "${TEMPLATES_DEFAULT_BRANCH}" "${TEMPLATES_REPO}" "${TEMPLATES_PARENT_FOLDER}"
+
+	local ClonedVersion
+	templates_version_into ClonedVersion
+	notice "Cloned {{|ApplicationName|}}${TEMPLATES_NAME}{{[-]}} at '{{|Version|}}${ClonedVersion}{{[-]}}'."
+
+	templates_checkout_latest_release_after_clone
+}
+
+# Cleanup Function
+cleanup() {
+	local -ri EXIT_CODE=$?
+	trap - ERR EXIT SIGABRT SIGALRM SIGHUP SIGINT SIGQUIT SIGTERM
+
+	if [[ -e ${APPLICATION_LOG} ]]; then
+		sudo chown "${DETECTED_PUID}:${DETECTED_PGID}" "${APPLICATION_LOG}" || true
+	fi
+	cat "${MKTEMP_LOG:-/dev/null}" >> "${APPLICATION_LOG}" || true
+	if [[ -n ${MKTEMP_LOG-} && -f ${MKTEMP_LOG} ]]; then
+		sudo rm -f "${MKTEMP_LOG}" &> /dev/null || true
+	fi
+	tail -1000 "${APPLICATION_LOG}" | tee "${APPLICATION_LOG}" > /dev/null || true
+	if [[ -n ${APPLICATION_CACHE_FOLDER-} && -d ${APPLICATION_CACHE_FOLDER} ]]; then
+		sudo rm -rf "${APPLICATION_CACHE_FOLDER?}" &> /dev/null || true
+	fi
+	sudo -E chmod +x "${SCRIPTNAME}" &> /dev/null || true
+
+	if [[ ${CI-} == true ]] && [[ ${TRAVIS_SECURE_ENV_VARS-} == false ]]; then
+		echo "TRAVIS_SECURE_ENV_VARS is false for Pull Requests from remote branches. Please retry failed builds!"
+	fi
+
+	if [[ ${EXIT_CODE} -ne 0 ]]; then
+		resolve_strings C \
+			"{{|ApplicationName|}}${APPLICATION_NAME}{{[-]}} did not finish running successfully." \
+			"Check logs in '{{|File|}}${APPLICATION_LOG}{{[-]}}'."
+	fi
+	if [[ ${PROMPT:-CLI} == "GUI" ]]; then
+		# Try to restore the terminal to a working state
+		stty cooked echo
+		# Move the cursor to the bottom of the screen
+		echo -n "${S[BS]}"
+	fi
+
+	exit ${EXIT_CODE}
+}
+trap 'cleanup' ERR EXIT SIGABRT SIGALRM SIGHUP SIGINT SIGQUIT SIGTERM
+
+declare -gx APPLICATION_VERSION="Unknown Version"
+declare -gx TEMPLATES_VERSION="Unknown Version"
+if check_repo; then
+	if declare -F ds_version > /dev/null; then
+		ds_version_into APPLICATION_VERSION
+		if [[ -z ${APPLICATION_VERSION} ]]; then
+			declare _ds_br_
+			ds_branch_into _ds_br_
+			APPLICATION_VERSION="${_ds_br_} Unknown Version"
+		fi
+	fi
+	if declare -F templates_version > /dev/null; then
+		templates_version_into TEMPLATES_VERSION
+		if [[ -z ${TEMPLATES_VERSION} ]]; then
+			declare _temp_br_
+			templates_branch_into _temp_br_
+			TEMPLATES_VERSION="${_temp_br_} Unknown Version"
+		fi
+	fi
+fi
+
+init_check_system() {
+	check_arch
+	# Terminal Check
+	if [[ -t 1 ]]; then
+		check_root
+		check_sudo
+	fi
+}
+
+init_check_cloned() {
+	if ! check_repo; then
+		clone_repo
+	fi
+}
+
+init_check_tty() {
+	# Check if tty is writable
+	if [[ ${CI-} != true && ! -w $(tty) ]]; then
+		case "$(uname -s)" in
+			Linux) exec script -qefc "$(printf "%q " "$0" "${ARGS[@]}")" /dev/null ;;
+			Darwin) exec script -q /dev/null "$0" "${ARGS[@]}" ;;
+			*)
+				error \
+					"The TTY is not writable." \
+					"{{|ApplicationName|}}${APPLICATION_NAME}{{[-]}} requires a writable TTY."
+				exit 1
+				;;
+		esac
+	fi
+}
+init_check_templates() {
+	if ! check_templates_repo; then
+		clone_templates_repo
+	fi
+}
+
+init_check_dependencies() {
+	run_script 'package_manager_init'
+	if [[ -v PM && -v PM_${PM^^}_COMMAND_DEPS ]]; then
+		declare -n COMMAND_DEPS="PM_${PM^^}_COMMAND_DEPS"
+	else
+		declare -n COMMAND_DEPS="PM__COMMAND_DEPS"
+	fi
+	pm_check_dependencies warn "${COMMAND_DEPS[@]}" || true
+}
+
+init_check_branch() {
+	if check_repo; then
+		ds_switch_branch
+	fi
+}
+
+init_check_symlink() {
+	if [[ -L ${DS_COMMAND} ]]; then
+		local DS_SYMLINK
+		DS_SYMLINK=$(readlink -f "${DS_COMMAND}")
+		if [[ ${SCRIPTNAME} != "${DS_SYMLINK}" ]]; then
+			if check_repo; then
+				if run_script 'question_prompt' "${PROMPT:-CLI}" N "{{|ApplicationName|}}${APPLICATION_NAME}{{[-]}} installation found at '{{|File|}}${DS_SYMLINK}{{[-]}}' location. Would you like to run '{{|UserCommand|}}${SCRIPTNAME}{{[-]}}' instead?"; then
+					run_script 'symlink_ds'
+					DS_COMMAND=$(command -v "${APPLICATION_COMMAND}" || true)
+					DS_SYMLINK=$(readlink -f "${DS_COMMAND}")
+				fi
+			fi
+			warn \
+				"Attempting to run {{|ApplicationName|}}${APPLICATION_NAME}{{[-]}} from '{{|RunningCommand|}}${DS_SYMLINK}{{[-]}}' location."
+			bash "${DS_SYMLINK}" -vyu
+			bash "${DS_SYMLINK}" -vyi --config-show
+			exec bash "${DS_SYMLINK}" "${ARGS[@]-}"
+		fi
+	fi
+	# Create Symlink
+	run_script 'symlink_ds'
+}
+
+init_check_update() {
+	# Only check for updates once every 15 minutes.
+	[ -n "$(find "${APPLICATION_UPDATE_RECORD}" -mmin -15 2> /dev/null)" ] && return
+	local Branch
+	ds_branch_into Branch
+	local TargetBranch="${Branch}"
+	if ds_tag_exists "${Branch}"; then
+		ds_best_branch_into TargetBranch
+	fi
+	git_resolve_update_target_into TargetBranch "${SCRIPTPATH}" "${APPLICATION_DEFAULT_BRANCH}" "${TargetBranch}" "${Branch}"
+	if ds_ref_exists "${Branch}"; then
+		if ds_update_available "${Branch}" "${TargetBranch}"; then
+			local TargetVersion
+			ds_version_into TargetVersion "${TargetBranch}"
+			warn \
+				"{{|ApplicationName|}}${APPLICATION_NAME}{{[-]}} [{{|Version|}}${APPLICATION_VERSION}{{[-]}}]" \
+				"An update to {{|ApplicationName|}}${APPLICATION_NAME}{{[-]}} is available." \
+				"Run '{{|UserCommand|}}${APPLICATION_COMMAND} -u{{[-]}}' to update to version '{{|Version|}}${TargetVersion}{{[-]}}'."
+		else
+			info \
+				"{{|ApplicationName|}}${APPLICATION_NAME}{{[-]}} [{{|Version|}}${APPLICATION_VERSION}{{[-]}}]"
+		fi
+	else
+		local MainBranch="${APPLICATION_DEFAULT_BRANCH}"
+		if ! ds_branch_exists "${MainBranch}"; then
+			MainBranch="${APPLICATION_LEGACY_BRANCH}"
+		fi
+		local CurrentVersion
+		ds_version_into CurrentVersion
+		warn \
+			"{{|ApplicationName|}}${APPLICATION_NAME}{{[-]}} branch '{{|Branch|}}${Branch}{{[-]}}' appears to no longer exist." \
+			"{{|ApplicationName|}}${APPLICATION_NAME}{{[-]}} is currently on version '{{|Version|}}${CurrentVersion}{{[-]}}'."
+		if ! ds_branch_exists "${MainBranch}"; then
+			error \
+				"{{|ApplicationName|}}${APPLICATION_NAME}{{[-]}} does not appear to have a '{{|Branch|}}${APPLICATION_DEFAULT_BRANCH}{{[-]}}' or '{{|Branch|}}${APPLICATION_LEGACY_BRANCH}{{[-]}}' branch."
+		else
+			local MainVersion
+			ds_version_into MainVersion "${MainBranch}"
+			warn \
+				"Run '{{|UserCommand|}}${APPLICATION_COMMAND} -u ${MainBranch}{{[-]}}' to update to the latest stable release '{{|Version|}}${MainVersion}{{[-]}}'."
+		fi
+	fi
+	templates_branch_into Branch
+	local TargetBranch="${Branch}"
+	if templates_tag_exists "${Branch}"; then
+		templates_best_branch_into TargetBranch
+	fi
+	git_resolve_update_target_into TargetBranch "${TEMPLATES_PARENT_FOLDER}" "${TEMPLATES_DEFAULT_BRANCH}" "${TargetBranch}" "${Branch}"
+	if templates_ref_exists "${Branch}"; then
+		if templates_update_available "${Branch}" "${TargetBranch}"; then
+			local TargetVersion
+			templates_version_into TargetVersion "${TargetBranch}"
+			warn \
+				"{{|ApplicationName|}}${TEMPLATES_NAME}{{[-]}} [{{|Version|}}${TEMPLATES_VERSION}{{[-]}}]" \
+				"An update to {{|ApplicationName|}}${TEMPLATES_NAME}{{[-]}} is available." \
+				"Run '{{|UserCommand|}}${APPLICATION_COMMAND} -u{{[-]}}' to update to version '{{|Version|}}${TargetVersion}{{[-]}}'."
+		else
+			info \
+				"{{|ApplicationName|}}${TEMPLATES_NAME}{{[-]}} [{{|Version|}}${TEMPLATES_VERSION}{{[-]}}]"
+		fi
+	else
+		Branch="${TEMPLATES_DEFAULT_BRANCH}"
+		local CurrentVersion
+		templates_version_into CurrentVersion
+		warn \
+			"{{|ApplicationName|}}${TEMPLATES_NAME}{{[-]}} branch '{{|Branch|}}${Branch}{{[-]}}' appears to no longer exist." \
+			"{{|ApplicationName|}}${TEMPLATES_NAME}{{[-]}} is currently on version '{{|Version|}}${CurrentVersion}{{[-]}}'."
+		if ! templates_branch_exists "${Branch}"; then
+			error \
+				"{{|ApplicationName|}}${TEMPLATES_NAME}{{[-]}} does not appear to have a '{{|Branch|}}${TEMPLATES_DEFAULT_BRANCH}{{[-]}}' branch."
+		else
+			local StableVersion
+			templates_version_into StableVersion "${Branch}"
+			warn \
+				"Run '{{|UserCommand|}}${APPLICATION_COMMAND} -u ${Branch}{{[-]}}' to update to the latest stable release '{{|Version|}}${StableVersion}{{[-]}}'."
+		fi
+	fi
+	touch "${APPLICATION_UPDATE_RECORD}"
+}
+
+init() {
+	# Verify the running environment is compatible
+	init_check_system
+	# Verify the repo is cloned
+	init_check_cloned
+	# Verify the templates repo is cloned
+	init_check_templates
+	# Verify the terminal is writable
+	init_check_tty
+	# Verify the dependencies are installed
+	init_check_dependencies
+	# Verify we are on the correct branch
+	init_check_branch
+	# Verify the symlink is created
+	init_check_symlink
+	# Verify that we are on the latest version
+	init_check_update
+}
 
 # Main Function
 main() {
-    # Arch Check
-    ARCH=$(uname -m)
-    readonly ARCH
-    if [[ ${ARCH} != "aarch64" ]] && [[ ${ARCH} != "armv7l" ]] && [[ ${ARCH} != "x86_64" ]]; then
-        fatal "Unsupported architecture."
-    fi
-    # Terminal Check
-    if [[ -t 1 ]]; then
-        root_check
-    fi
-    # Repo Check
-    local PROMPT
-    if [[ ${FORCE:-} == true ]]; then
-        PROMPT="FORCE"
-    fi
-    local DS_COMMAND
-    DS_COMMAND=$(command -v ds || true)
-    if [[ -L ${DS_COMMAND} ]]; then
-        local DS_SYMLINK
-        DS_SYMLINK=$(readlink -f "${DS_COMMAND}")
-        if [[ ${SCRIPTNAME} != "${DS_SYMLINK}" ]]; then
-            if repo_exists; then
-                if run_script 'question_prompt' "${PROMPT:-CLI}" N "DockSTARTer installation found at ${DS_SYMLINK} location. Would you like to run ${SCRIPTNAME} instead?"; then
-                    run_script 'symlink_ds'
-                    DS_COMMAND=$(command -v ds || true)
-                    DS_SYMLINK=$(readlink -f "${DS_COMMAND}")
-                fi
-            fi
-            warn "Attempting to run DockSTARTer from ${DS_SYMLINK} location."
-            sudo -E bash "${DS_SYMLINK}" -vu
-            sudo -E bash "${DS_SYMLINK}" -vi
-            exec sudo -E bash "${DS_SYMLINK}" "${ARGS[@]:-}"
-        fi
-    else
-        if ! repo_exists; then
-            warn "Attempting to clone DockSTARTer repo to ${DETECTED_HOMEDIR}/.docker location."
-            # Anti Sudo Check
-            if [[ ${EUID} -eq 0 ]]; then
-                fatal "Using sudo during cloning on first run is not supported."
-            fi
-            git clone https://github.com/GhostWriters/DockSTARTer "${DETECTED_HOMEDIR}/.docker" || fatal "Failed to clone DockSTARTer repo.\nFailing command: ${F[C]}git clone https://github.com/GhostWriters/DockSTARTer \"${DETECTED_HOMEDIR}/.docker\""
-            notice "Performing first run install."
-            exec sudo -E bash "${DETECTED_HOMEDIR}/.docker/main.sh" "-vi"
-        fi
-    fi
-    # Sudo Check
-    if [[ ${EUID} -ne 0 ]]; then
-        exec sudo -E bash "${SCRIPTNAME}" "${ARGS[@]:-}"
-    fi
-    # Create Symlink
-    run_script 'symlink_ds'
-    # Execute CLI Argument Functions
-    if [[ -n ${ADD:-} ]]; then
-        run_script 'appvars_create' "${ADD}"
-        run_script 'env_update'
-        exit
-    fi
-    if [[ -n ${COMPOSE:-} ]]; then
-        case ${COMPOSE} in
-            down)
-                run_script 'docker_compose' "${COMPOSE}"
-                ;;
-            generate | merge)
-                run_script 'yml_merge'
-                ;;
-            pull* | restart* | up*)
-                run_script 'yml_merge'
-                run_script 'docker_compose' "${COMPOSE}"
-                ;;
-            *)
-                fatal "Invalid compose option."
-                ;;
-        esac
-        exit
-    fi
-    if [[ -n ${ENV:-} ]]; then
-        run_script 'env_update'
-        run_script 'appvars_create_all'
-        exit
-    fi
-    if [[ -n ${ENVMETHOD:-} ]]; then
-        case "${ENVMETHOD:-}" in
-            --env-get)
-                if [[ ${ENVVAR:-} != "" ]]; then
-                    run_script 'env_get' "${ENVVAR}"
-                else
-                    echo "Invalid usage. Must be"
-                    echo "  --env-get with variable name ('--env-get=VAR')"
-                fi
-                ;;
-            --env-set)
-                if [[ ${ENVVAR:-} != "" ]] && [[ ${ENVVAL:-} != "" ]]; then
-                    run_script 'env_set' "${ENVVAR}" "${ENVVAL}"
-                else
-                    echo "Invalid usage. Must be"
-                    echo "  --env-set with variable name and value ('--env-set=VAR,VAL')"
-                fi
-                ;;
-            *)
-                echo "Invalid option: '${ENVMETHOD:-}'"
-                ;;
-        esac
-        exit
-    fi
-    if [[ -n ${INSTALL:-} ]]; then
-        run_script 'run_install'
-        exit
-    fi
-    if [[ -n ${PRUNE:-} ]]; then
-        run_script 'docker_prune'
-        exit
-    fi
-    if [[ -n ${REMOVE:-} ]]; then
-        if [[ ${REMOVE} == true ]]; then
-            run_script 'appvars_purge_all'
-            run_script 'env_update'
-        else
-            run_script 'appvars_purge' "${REMOVE}"
-            run_script 'env_update'
-        fi
-        exit
-    fi
-    if [[ -n ${TEST:-} ]]; then
-        run_test "${TEST}"
-        exit
-    fi
-    if [[ -n ${UPDATE:-} ]]; then
-        if [[ ${UPDATE} == true ]]; then
-            run_script 'update_self'
-        else
-            run_script 'update_self' "${UPDATE}"
-        fi
-        exit
-    fi
-    # Run Menus
-    PROMPT="GUI"
-    run_script 'menu_main'
+	init
+	run_script 'apply_config'
+	cmdline "${ARGS[@]-}"
 }
+
 main

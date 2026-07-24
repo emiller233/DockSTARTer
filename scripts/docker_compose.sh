@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+docker_compose() {
+	local -a InputList
+	IFS=$' \t\n\r' read -d '' -ra InputList <<< "$*" || true
+	local ComposeInput
+	printf -v ComposeInput '%s ' "${InputList[@]}"
+	ComposeInput="${ComposeInput% }"
+	local Command=${ComposeInput%% *}
+	local APPNAME AppName
+	if [[ ${ComposeInput} == *" "* ]]; then
+		APPNAME=${ComposeInput#* }
+		local -a AppList AppNameArray
+		IFS=$' \t\n\r' read -d '' -ra AppList <<< "${APPNAME}" || true
+		run_script 'app_nicename_into_array' AppNameArray "${AppList[@]}"
+		printf -v AppName '%s, ' "${AppNameArray[@]}"
+		AppName="${AppName%, }"
+	fi
+
+	local Title="Docker Compose"
+
+	local Question YesNotice NoNotice
+	local -a ComposeCommand
+	case ${Command} in
+		merge | generate)
+			Question="Merge enabled app templates to '{{|File|}}docker-compose.yml{{[-]}}'?"
+			NoNotice="Not merging enabled app templates to '{{|File|}}docker-compose.yml{{[-]}}'."
+			YesNotice="Merging enabled app templates to '{{|File|}}docker-compose.yml{{[-]}}'."
+			;;
+		down)
+			if [[ -n ${AppName-} ]]; then
+				Question="Stop and remove: ${AppName}?"
+				NoNotice="Not stopping and removing: {{|App|}}${AppName}{{[-]}}."
+				YesNotice="Stopping and removing {{|App|}}${AppName}{{[-]}}."
+			else
+				Question="Stop and remove containers, networks, volumes, and images created by {{|ApplicationName|}}${APPLICATION_NAME}?"
+				NoNotice="Not stopping and removing containers, networks, volumes, and images created by {{|ApplicationName|}}${APPLICATION_NAME}."
+				YesNotice="Stopping and removing containers, networks, volumes, and images created by {{|ApplicationName|}}${APPLICATION_NAME}."
+			fi
+			ComposeCommand[0]="down --remove-orphans ${APPNAME-}"
+			;;
+		pause)
+			if [[ -n ${AppName-} ]]; then
+				Question="Pause: {{|App|}}${AppName}{{[-]}}?"
+				NoNotice="Not pausing: {{|App|}}${AppName}{{[-]}}."
+				YesNotice="Pausing: {{|App|}}${AppName}{{[-]}}."
+			else
+				Question="Pause all running containers?"
+				NoNotice="Not pausing all running containers."
+				YesNotice="Pausing all running containers."
+			fi
+			ComposeCommand[0]="pause ${APPNAME-}"
+			;;
+		pull)
+			if [[ -n ${AppName-} ]]; then
+				Question="Pull the latest images for: {{|App|}}${AppName}{{[-]}}?"
+				NoNotice="Not pulling the latest images for: {{|App|}}${AppName}{{[-]}}."
+				YesNotice="Pulling the latest images for: {{|App|}}${AppName}{{[-]}}."
+			else
+				Question="Pull the latest images for all enabled services?"
+				NoNotice="Not pulling the latest images for all enabled services."
+				YesNotice="Pulling the latest images for all enabled services."
+			fi
+			ComposeCommand[0]="pull --include-deps ${APPNAME-}"
+			;;
+		restart)
+			if [[ -n ${AppName-} ]]; then
+				Question="Restart: {{|App|}}${AppName}{{[-]}}?"
+				NoNotice="Not restarting: {{|App|}}${AppName}{{[-]}}."
+				YesNotice="Restarting: {{|App|}}${AppName}{{[-]}}."
+			else
+				Question="Restart all stopped and running containers?"
+				NoNotice="Not restarting all stopped and running containers."
+				YesNotice="Restarting all stopped and running containers."
+			fi
+			ComposeCommand[0]="restart ${APPNAME-}"
+			;;
+		stop)
+			if [[ -n ${AppName-} ]]; then
+				Question="Stop: {{|App|}}${AppName}{{[-]}}?"
+				NoNotice="Not stopping: {{|App|}}${AppName}{{[-]}}."
+				YesNotice="Stopping: {{|App|}}${AppName}{{[-]}}."
+			else
+				Question="Stop all running services?"
+				NoNotice="Not stopping all running services."
+				YesNotice="Stopping all running services."
+			fi
+			ComposeCommand[0]="stop ${APPNAME-}"
+			;;
+		unpause)
+			if [[ -n ${AppName-} ]]; then
+				Question="Unpause: {{|App|}}${AppName}{{[-]}}?"
+				NoNotice="Not unpausing: {{|App|}}${AppName}{{[-]}}."
+				YesNotice="Unpausing: {{|App|}}${AppName}{{[-]}}."
+			else
+				Question="Unpause all running containers?"
+				NoNotice="Not unpausing all running containers."
+				YesNotice="Unpausing all running containers."
+			fi
+			ComposeCommand[0]="unpause ${APPNAME-}"
+			;;
+		update)
+			if [[ -n ${AppName-} ]]; then
+				Question="Update and start: {{|App|}}${AppName}{{[-]}}?"
+				NoNotice="Not updating and starting: {{|App|}}${AppName}{{[-]}}."
+				YesNotice="Updating and starting: {{|App|}}${AppName}{{[-]}}."
+			else
+				Question="Update and start containers for all enabled services?"
+				NoNotice="Not updating and starting containers for all enabled services."
+				YesNotice="Updating and starting containers for all enabled services."
+			fi
+			ComposeCommand[0]="up -d --remove-orphans --pull always ${APPNAME-}"
+			;;
+		up)
+			if [[ -n ${AppName-} ]]; then
+				Question="Start: {{|App|}}${AppName}{{[-]}}?"
+				NoNotice="Not starting: {{|App|}}${AppName}{{[-]}}."
+				YesNotice="Starting: {{|App|}}${AppName}{{[-]}}."
+			else
+				Question="Start containers for all enabled services?"
+				NoNotice="Not starting containers for all enabled services."
+				YesNotice="Starting containers for all enabled services."
+			fi
+			ComposeCommand[0]="up -d --remove-orphans --pull missing ${APPNAME-}"
+			;;
+		*)
+			Question="Update containers for all enabled services?"
+			NoNotice="Not updating containers for all enabled services."
+			YesNotice="Updating containers for all enabled services."
+			ComposeCommand[0]="up -d --remove-orphans --pull always"
+			;;
+	esac
+
+	local -i result=0
+	if run_script 'question_prompt' Y "${Question}" "${Title}" "${ASSUMEYES:+Y}"; then
+		#shellcheck disable=SC2034 # (warning): PipePID is passed by name to tui_pipe_open/close via nameref and appears unused to shellcheck.
+		local -i PipeFD PipePID
+		tui_pipe_open PipeFD PipePID "{{|TitleSuccess|}}${Title}" "${YesNotice}{{[-]}}\n{{|CommandLine|}} ${APPLICATION_COMMAND} --compose ${ComposeInput}"
+		{
+			[[ -n ${YesNotice-} ]] && notice "${YesNotice}"
+			run_script 'require_docker'
+			if run_script 'yml_merge'; then
+				for index in "${!ComposeCommand[@]}"; do
+					local -a Command=(
+						docker compose --project-directory "${COMPOSE_FOLDER}/"
+					)
+					local -a CommandArgs
+					IFS=' ' read -ra CommandArgs <<< "${ComposeCommand[index]}"
+					if ! RunAndLog notice "" error "Failed to run compose." "${Command[@]}" "${CommandArgs[@]}"; then
+						result=1
+						break
+					fi
+				done
+			else
+				result=1
+			fi
+		} >&${PipeFD} 2>&1 || true
+		tui_pipe_close PipeFD PipePID
+	else
+		#shellcheck disable=SC2034 # (warning): PipePID is passed by name to tui_pipe_open/close via nameref and appears unused to shellcheck.
+		local -i PipeFD PipePID
+		tui_pipe_open PipeFD PipePID "{{|TitleError|}}${Title}" "${NoNotice}"
+		{ [[ -n ${NoNotice-} ]] && notice "${NoNotice}" || true; } >&${PipeFD} 2>&1
+		tui_pipe_close PipeFD PipePID
+	fi
+	return ${result}
+}
+
+test_docker_compose() {
+	run_script 'appvars_create' WATCHTOWER
+	cat "${COMPOSE_ENV}"
+	run_script 'yml_merge'
+	notice "COMPOSE_FOLDER: ${COMPOSE_FOLDER}"
+	eval "docker compose --project-directory ${COMPOSE_FOLDER}/ config" ||
+		fatal \
+			"Failed to display compose config." \
+			"Failing command: {{|FailingCommand|}}docker compose --project-directory ${COMPOSE_FOLDER}/ config"
+	run_script 'docker_compose'
+}

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+env_create() {
+	local -a DefaultApps=(
+		WATCHTOWER
+	)
+
+	if ! [[ -d ${COMPOSE_FOLDER} ]]; then
+		notice "Creating folder '{{|Folder|}}${COMPOSE_FOLDER}{{[-]}}'."
+		mkdir -p "${COMPOSE_FOLDER}" ||
+			fatal \
+				"Failed to create folder." \
+				"Failing command: {{|FailingCommand|}}mkdir -p \"${COMPOSE_FOLDER}\""
+	fi
+
+	run_script 'set_permissions' "${COMPOSE_FOLDER}"
+	run_script 'env_backup'
+
+	if [[ -f ${COMPOSE_ENV} ]]; then
+		info "File '{{|File|}}${COMPOSE_ENV}{{[-]}}' found."
+		run_script 'env_sanitize' --skip-backup
+	else
+		warn "File '{{|File|}}${COMPOSE_ENV}{{[-]}}' not found. Copying example template."
+		cp "${COMPOSE_ENV_DEFAULT_FILE}" "${COMPOSE_ENV}" ||
+			fatal \
+				"Failed to copy file." \
+				"Failing command: {{|FailingCommand|}}cp \"${COMPOSE_ENV_DEFAULT_FILE}\" \"${COMPOSE_ENV}\""
+		run_script 'set_permissions' "${COMPOSE_ENV}"
+		run_script 'env_sanitize' --skip-backup
+		local -a ReferencedApps
+		run_script 'app_list_referenced_into_array' ReferencedApps
+		if [[ -n ${DefaultApps-} && -z ${ReferencedApps[*]-} ]]; then
+			info "Installing default applications."
+			run_script 'appvars_create' "${DefaultApps[@]}"
+			run_script 'env_sanitize' --skip-backup
+		fi
+	fi
+}
+
+test_env_create() {
+	run_script 'env_create'
+	cat "${COMPOSE_ENV}"
+}

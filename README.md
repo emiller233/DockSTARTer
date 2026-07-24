@@ -1,25 +1,27 @@
 # <!-- Home -->
 
-[![DockSTARTer](https://github.com/GhostWriters/DockSTARTer/raw/master/docs/images/logo.png)](https://dockstarter.com)
+[![DockSTARTer](docs/assets/logo.png)](https://dockstarter.com)
 
-[![Supporters on Open Collective](https://img.shields.io/opencollective/all/DockSTARTer.svg?style=flat-square&color=607D8B)](#supporters)
-[![Discord chat](https://img.shields.io/discord/477959324183035936.svg?style=flat-square&color=607D8B&logo=discord)](https://dockstarter.com/discord)
-[![GitHub contributors](https://img.shields.io/github/contributors/GhostWriters/DockSTARTer.svg?style=flat-square&color=607D8B)](https://github.com/GhostWriters/DockSTARTer/graphs/contributors)
-[![GitHub last commit master](https://img.shields.io/github/last-commit/GhostWriters/DockSTARTer/master.svg?style=flat-square&color=607D8B&label=code%20committed)](https://github.com/GhostWriters/DockSTARTer/commits/master)
-[![GitHub license](https://img.shields.io/github/license/GhostWriters/DockSTARTer.svg?style=flat-square&color=607D8B)](https://github.com/GhostWriters/DockSTARTer/blob/master/LICENSE.md)
-[![GitHub Workflow Status](https://img.shields.io/github/workflow/status/GhostWriters/DockSTARTer/Run%20Tests/master?style=flat-square&color=607D8B&logo=github)](https://github.com/GhostWriters/DockSTARTer/actions?query=workflow%3ARun%20Tests+branch%3Amaster)
+[![Supporters on Open Collective](https://img.shields.io/opencollective/all/DockSTARTer.svg?style=flat-square&color=607D8B&logo=opencollective&logoColor=white)](#supporters)
+[![Discord chat](https://img.shields.io/discord/477959324183035936.svg?style=flat-square&color=607D8B&logo=discord&logoColor=white)](https://dockstarter.com/discord)
+[![GitHub contributors](https://img.shields.io/github/contributors/GhostWriters/DockSTARTer.svg?style=flat-square&color=607D8B&logo=github&logoColor=white)](https://github.com/GhostWriters/DockSTARTer/graphs/contributors)
+[![GitHub last commit main](https://img.shields.io/github/last-commit/GhostWriters/DockSTARTer/main.svg?style=flat-square&color=607D8B&logo=github&logoColor=white&label=code%20committed)](https://github.com/GhostWriters/DockSTARTer/commits/main)
+[![GitHub license](https://img.shields.io/github/license/GhostWriters/DockSTARTer.svg?style=flat-square&color=607D8B&logo=github&logoColor=white)](https://github.com/GhostWriters/DockSTARTer/blob/main/LICENSE)
+[![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/GhostWriters/DockSTARTer/tests.yml?style=flat-square&color=607D8B&logo=github&logoColor=white&branch=main)](https://github.com/GhostWriters/DockSTARTer/actions?query=workflow%3ARun%20Tests+branch%3Amain)
 
 The main goal of DockSTARTer is to make it quick and easy to get up and running with Docker.
 
 You may choose to rely on DockSTARTer for various changes to your Docker system or use DockSTARTer as a stepping stone and learn to do more advanced configurations.
 
-![Main Menu](https://i.imgur.com/odfRk0j.png)
+![Main Menu](docs/assets/menu_main.png "Main Menu")
 
-![App Select](https://i.imgur.com/tFsu2Hh.png)
+![App Select](docs/assets/menu_app_select.png "App Select")
 
-![Value Prompt](https://i.imgur.com/k1bdAoQ.png)
+![Variable Select](docs/assets/menu_config_vars.png "Variable Select")
 
-![Command Line Interface](https://i.imgur.com/Y8F3uT2.png)
+![Value Prompt](docs/assets/menu_value_prompt.png "Value Prompt")
+
+![Command Line Interface](docs/assets/command_help.png "Command Line Interface")
 
 ## Getting Started
 
@@ -29,6 +31,14 @@ You may choose to rely on DockSTARTer for various changes to your Docker system 
 - You must be logged in as a non-root user with sudo permissions.
 
 ### One Time Setup (required)
+
+- APK Systems (Alpine)
+
+  ```bash
+  sudo apk add curl git
+  bash -c "$(curl -fsSL https://get.dockstarter.com)"
+  sudo reboot
+  ```
 
 - APT Systems ([Debian](https://docs.docker.com/install/linux/docker-ce/debian/#os-requirements), [Ubuntu](https://docs.docker.com/install/linux/docker-ce/ubuntu/#os-requirements), etc)
 
@@ -59,6 +69,14 @@ You may choose to rely on DockSTARTer for various changes to your Docker system 
   sudo reboot
   ```
 
+- Pacman Systems (Arch, Manjaro, EndeavourOS, etc.)
+
+  ```bash
+  sudo pacman -Sy curl docker git
+  bash -c "$(curl -fsSL https://get.dockstarter.com)"
+  sudo reboot
+  ```
+
 - YUM Systems ([CentOS](https://docs.docker.com/install/linux/docker-ce/centos/#os-requirements))
 
   ```bash
@@ -67,15 +85,36 @@ You may choose to rely on DockSTARTer for various changes to your Docker system 
   sudo reboot
   ```
 
-- Pacman Systems (Arch, Manjaro, EndeavourOS, etc.)
-
-  > Note that systems with the `pacman` package manager will not install `docker` via the [https://get.docker.com](https://get.docker.com) script that is used for other distros. The instructions below provide information on installing all the required packages manually before installing DockSTARTer.
+- MacOS Systems ([Homebrew](https://brew.sh))
 
   ```bash
-  sudo pacman -Sy curl docker git
+  brew update
+  brew upgrade --cask
+  brew upgrade
+  brew install --cask docker
+  brew install docker-compose
+  ```
+
+  or
+
+  ```bash
+  brew update
+  brew upgrade --cask
+  brew upgrade
+  brew install docker docker-compose
+  ```
+
+  ```bash
+  brew install bash curl git grep gnu-sed
   bash -c "$(curl -fsSL https://get.dockstarter.com)"
   sudo reboot
   ```
+
+  Additional Steps for MacOS:
+  - Run Docker at start up:
+    - In docker desktop (Docker.app) open settings and ensure "Start Docker Desktop when you sign in to your computer" is enabled in the General heading. This step is required to to start docker automatically after a restart and allow DockSTARTer to communicate with the docker daemon.
+  - Approve Docker keychain permissions:
+    - At least once after installing DockSTARTer open the terminal.app from the MacOS desktop and run the DockSTARTer command `ds -c`. A keychain access dialog will pop up. Type your MacOS login password into the dialog and click on "Always Allow".
 
 <details>
   <summary>Alternate install (any system)</summary>
@@ -86,15 +125,16 @@ The standard install above downloads the initial script using a method with some
 ## NOTE: Run the appropriate command for your distro
 sudo apt-get install curl git
 sudo dnf install curl git
+sudo pacman -Sy curl git
 sudo yum install curl git
-sudo pacman -Sy curl docker git
+brew install bash curl git grep gnu-sed
 ```
 
 Then
 
 ```bash
-git clone https://github.com/GhostWriters/DockSTARTer "/home/${USER}/.docker"
-sudo bash /home/"${USER}"/.docker/main.sh -vi
+git clone https://github.com/GhostWriters/DockSTARTer "/home/${USER}/.dockstarter"
+bash /home/"${USER}"/.dockstarter/main.sh -vi
 sudo reboot
 ```
 
@@ -120,7 +160,11 @@ Click the chat badge to join us on Discord for support!
 
 Additional information can be found on our [Support Page](https://dockstarter.com/basics/support/).
 
-## Contributors
+## Contributing
+
+Want to help develop DockSTARTer? Check out our [contributing guidelines](https://github.com/GhostWriters/DockSTARTer/blob/main/.github/CONTRIBUTING.md) and [code of conduct](https://github.com/GhostWriters/DockSTARTer/blob/main/.github/CODE_OF_CONDUCT.md).
+
+### Contributors
 
 [![GitHub contributors](https://img.shields.io/github/contributors/GhostWriters/DockSTARTer.svg?style=flat-square&color=607D8B)](https://github.com/GhostWriters/DockSTARTer/graphs/contributors)
 

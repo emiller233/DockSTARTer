@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+env_merge_newonly() {
+	# env_merge_newonly "MergeToFile" "MergeFromFile"
+	#
+	# Merges all new variables from "MergeFromFile" to "MergeToFile".
+	# Skips all variables that already exist in "MergeToFile"
+	local MergeToFile=${1-}
+	local MergeFromFile=${2-}
+
+	# If "MergeToFile" doesn't exists, create it
+	if [[ ! -f ${MergeToFile} ]]; then
+		touchfile "${MergeToFile}"
+	fi
+
+	# If "MergeFromFile" doesn't exists, give a warning
+	if [[ ! -f ${MergeFromFile} ]]; then
+		warn "File '{{|File|}}${MergeFromFile}{{[-]}}' does not exist."
+	else
+		local -a MergeFromVars MergeToVars VarsToAdd
+		run_script 'env_var_list_into_array' MergeFromVars "${MergeFromFile}"
+		run_script 'env_var_list_into_array' MergeToVars "${MergeToFile}"
+		readarray -t VarsToAdd < <(comm -23 <(printf '%s\n' "${MergeFromVars[@]}" | sort) <(printf '%s\n' "${MergeToVars[@]}" | sort))
+		if [[ -n ${VarsToAdd[*]-} ]]; then
+			local old_IFS="${IFS}"
+			IFS='|'
+			local VarsToAddRegex="${VarsToAdd[*]}"
+			IFS="${old_IFS}"
+			local MergeLines
+			readarray -t MergeLines < <(
+				run_script 'env_get_line_regex' "${VarsToAddRegex}" "${MergeFromFile}"
+			)
+			notice \
+				"Adding variables to {{|File|}}${MergeToFile}{{[-]}}:" \
+				"$(printf "   {{|Var|}}%s{{[-]}}\n" "${MergeLines[@]}")"
+			{
+				printf '\n'
+				printf '%s\n' "${MergeLines[@]}"
+			} >> "${MergeToFile}" ||
+				fatal \
+					"Failed to add variables to '{{|File|}}${MergeToFile}{{[-]}}"
+		fi
+	fi
+}
+
+test_env_merge_newonly() {
+	#run_script 'env_merge_newonly'
+	warn "CI does not test env_merge_newonly."
+}

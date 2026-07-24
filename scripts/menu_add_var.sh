@@ -1,0 +1,446 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+declare -a _dependencies_list=(
+	grep
+)
+
+menu_add_var_select_whiptail_into() {
+	local -n _mavswi_out_="${1}"
+	assert_nameref_is_string "${1}"
+	shift
+	local Title="${1-}"
+	shift || true
+	local Message="${1-}"
+	shift || true
+	#shellcheck disable=SC2034 # (warning): ParsedOptions is passed by name to _whiptail_parse_options_ via nameref and appears unused to shellcheck.
+	local -a ParsedOptions=()
+	#shellcheck disable=SC2034 # (warning): Maximized is passed by name to _whiptail_parse_options_ via nameref and appears unused to shellcheck.
+	local -i _n_=0 Maximized=0
+	_whiptail_parse_options_ ParsedOptions Maximized _n_ "$@"
+	shift "${_n_}"
+	local -a Items=("$@")
+	local -a MenuDialog=(
+		"${Title}"
+		"${Message}"
+		--maximized
+		--item-help
+		--ok-label:Select
+		--cancel-label:Done
+		"${Items[@]}"
+	)
+	local -i result=0
+	local Selected
+	tui_menu_into Selected "${MenuDialog[@]}" || result=$?
+	case ${DIALOG_BUTTONS[result]-} in
+		OK)
+			local StrippedSelected="${Selected// /}"
+			if [[ ${StrippedSelected} == *_ ]]; then
+				local NewValue
+				tui_inputbox_into NewValue "${Title}" "${Message}" --maximized || result=$?
+				case ${DIALOG_BUTTONS[result]-} in
+					OK)
+						_mavswi_out_="RENAMED ${Selected} ${NewValue}"
+						return "${DIALOG_EXTRA}"
+						;;
+					*)
+						return ${result}
+						;;
+				esac
+			else
+				_mavswi_out_="${Selected}"
+				return "${DIALOG_OK}"
+			fi
+			;;
+		*)
+			return ${result}
+			;;
+	esac
+}
+
+menu_add_var_select_into() {
+	local -n _mavsi_out_="${1}"
+	assert_nameref_is_string "${1}"
+	shift
+	local -i result=0
+	local temp_file="${TEMP_FOLDER}/${APPLICATION_NAME,,}.${FUNCNAME[0]}.$$.tmp"
+	if use_dialog; then
+		dialog_inputmenu "$@" > "${temp_file}" || result=$?
+		read -r _mavsi_out_ < "${temp_file}" || true
+		rm -f "${temp_file}"
+		return ${result}
+	else
+		menu_add_var_select_whiptail_into _mavsi_out_ "$@" || result=$?
+		return ${result}
+	fi
+}
+
+menu_add_var() {
+	local APPNAME=${1-}
+	local appname
+	local AppName
+	local VarFile
+	local VarType
+	local VarName=""
+	local Heading
+	local VarNameHeading
+	local VarNameNone="{{|Highlight|}}[*NONE*]"
+	Heading=""
+	if [[ -z ${APPNAME-} ]]; then
+		# No appname specified, creating a global variable in .env
+		VarType="GLOBAL"
+		Title="Add Global Variable"
+		VarFile="${COMPOSE_ENV}"
+	else
+		Title="Add Application Variable"
+		APPNAME="${APPNAME^^}"
+		if [[ ${APPNAME} == *":" ]]; then
+			# appname: specified, creating a variable in appname.env
+			VarType="APPENV"
+			APPNAME="${APPNAME%:}"
+			appname=${APPNAME,,}
+			run_script 'app_env_file_into' VarFile "${appname}"
+		else
+			# appname specified, creating an APPNAME__* variable in .env
+			VarType="APP"
+			appname="${APPNAME,,}"
+			VarFile="${COMPOSE_ENV}"
+		fi
+		run_script 'app_nicename_into' AppName "${APPNAME}"
+	fi
+
+	case "${VarType}" in
+		APP)
+			local APPNAME__CONTAINER_NAME="${APPNAME}__CONTAINER_NAME"
+			local APPNAME__ENABLED="${APPNAME}__ENABLED"
+			local APPNAME__HOSTNAME="${APPNAME}__HOSTNAME"
+			local APPNAME__NETWORK_MODE="${APPNAME}__NETWORK_MODE"
+			local APPNAME__RESTART="${APPNAME}__RESTART"
+			local APPNAME__TAG="${APPNAME}__TAG"
+			local APPNAME__="               ${APPNAME}__"
+			local APPNAME__ENVIRONMENT_="   ${APPNAME}__ENVIRONMENT_"
+			local APPNAME__PORT_="          ${APPNAME}__PORT_"
+			local APPNAME__VOLUME_="        ${APPNAME}__VOLUME_"
+			local -a TemplateOptions=(
+				"${APPNAME__}"
+				"${APPNAME__ENVIRONMENT_}"
+				"${APPNAME__PORT_}"
+				"${APPNAME__VOLUME_}"
+			)
+			local TemplateOptionsRegex
+			{
+				IFS='|'
+				TemplateOptionsRegex="${TemplateOptions[*]}"
+			}
+			local -a StockOptions=(
+				"${APPNAME__CONTAINER_NAME}"
+				"${APPNAME__HOSTNAME}"
+				"${APPNAME__NETWORK_MODE}"
+				"${APPNAME__RESTART}"
+				"${APPNAME__TAG}"
+			)
+			local StockOptionsRegex
+			{
+				IFS='|'
+				StockOptionsRegex="${StockOptions[*]}"
+			}
+			local -A OptionHelpLine=(
+				["${APPNAME__}"]="Complete this with any variable you want."
+				["${APPNAME__ENVIRONMENT_}"]="Complete this with a var to use in the {{|Highlight|}}environment:{{[-]}} section of your override. Suggest adding to {{|Highlight|}}{{|Highlight|}}env_files/${APPNAME,,}.env{{[-]}} instead."
+				["${APPNAME__PORT_}"]="Complete this with a var to use in the {{|Highlight|}}ports:{{[-]}} section of your override."
+				["${APPNAME__VOLUME_}"]="Complete this with a var to use in the {{|Highlight|}}volumes:{{[-]}} section of your override."
+				["${APPNAME__CONTAINER_NAME}"]="This can be used in the {{|Highlight|}}container_name:{{[-]}} section in your override."
+				["${APPNAME__ENABLED}"]="Creating this variable will cause the app to be controlled by ${APPLICATION_NAME} with no override needed."
+				["${APPNAME__HOSTNAME}"]="This can be used in the {{|Highlight|}}hostname:{{[-]}} section of your override."
+				["${APPNAME__NETWORK_MODE}"]="This can be used in the {{|Highlight|}}network_mode:{{[-]}} section of your override."
+				["${APPNAME__RESTART}"]="This can be used in the {{|Highlight|}}restart:{{[-]}} section of your override."
+				["${APPNAME__TAG}"]="This can be used in the {{|Highlight|}}image:{{[-]}} section of your override. Add it at the end as {{|Highlight|}}:\${${APPNAME__TAG// /}}{{[-]}}."
+			)
+			ClearHelpLine="This will clear any variable name already entered."
+			AddAllHelpLine="This will add all stock variables listed below."
+			local -A OptionValue=()
+			while true; do
+				set_screen_size
+				VarNameHeading="${VarName:-${VarNameNone}}"
+				run_script 'menu_heading_into' Heading ":${AppName}" "${VarNameHeading}"
+				local -a TemplateValueOptions ClearValueOptions EnabledValueOptions AddAllValueOptions StockValueOptions
+				unset TemplateValueOptions ClearValueOptions EnabledValueOptions AddAllValueOptions StockValueOptions
+				local -i OptionsLength=0
+				local ValidOptions=()
+				local ValidStockOptions=()
+				for Option in "${TemplateOptions[@]}"; do
+					ValidOptions+=("${Option}")
+					if [[ ${#Option} -gt ${OptionsLength} ]]; then
+						OptionsLength=${#Option}
+					fi
+					local StrippedOption="${Option// /}"
+					if [[ ${VarName} =~ ^${StrippedOption} ]]; then
+						OptionValue["${Option}"]="${VarName#"${StrippedOption}"*}"
+					else
+						OptionValue["${Option}"]=""
+					fi
+					TemplateValueOptions+=("${Option}" "${OptionValue["${Option}"]}" "${OptionHelpLine["${Option}"]-}")
+				done
+				if run_script 'app_is_builtin' "${APPNAME}"; then
+					local Option="${APPNAME__ENABLED}"
+					local StrippedOption="${Option// /}"
+					if ! run_script 'env_var_exists' "${StrippedOption}"; then
+						ValidOptions+=("${Option}")
+						if [[ ${#Option} -gt ${OptionsLength} ]]; then
+							OptionsLength=${#Option}
+						fi
+						if [[ ${VarName} == "${StrippedOption}" ]]; then
+							OptionValue["${Option}"]="${StrippedOption}"
+						else
+							OptionValue["${Option}"]=""
+						fi
+						EnabledValueOptions+=("${Option}" "${OptionValue["${Option}"]}" "${OptionHelpLine["${Option}"]-}")
+					fi
+				fi
+				for Option in "${StockOptions[@]}"; do
+					local StrippedOption="${Option// /}"
+					if ! run_script 'env_var_exists' "${StrippedOption}"; then
+						ValidOptions+=("${Option}")
+						ValidStockOptions+=("${Option}")
+						if [[ ${#Option} -gt ${OptionsLength} ]]; then
+							OptionsLength=${#Option}
+						fi
+						if [[ ${VarName} == "${StrippedOption}" ]]; then
+							OptionValue["${Option}"]="${StrippedOption}"
+						else
+							OptionValue["${Option}"]=""
+						fi
+						StockValueOptions+=("${Option}" "${OptionValue["${Option}"]}" "${OptionHelpLine["${Option}"]-}")
+					fi
+				done
+				local Bar
+				OptionClear=" CLEAR INPUT "
+				Bar="$(printf "%$(((OptionsLength - ${#OptionClear} - 1) / 2))s" '' | tr ' ' '=')"
+				OptionClear=" ${Bar}${OptionClear}${Bar}"
+				ValidOptions+=("${OptionClear}")
+				ClearValueOptions+=("${OptionClear}" "" "${ClearHelpLine-}")
+				local OptionAddAll=" ADD ALL BELOW "
+				Bar="$(printf "%$(((OptionsLength - ${#OptionAddAll} - 1) / 2))s" '' | tr ' ' 'v')"
+				OptionAddAll=" ${Bar}${OptionAddAll}${Bar}"
+				if [[ -n ${StockValueOptions[*]-} ]]; then
+					ValidOptions+=("${OptionAddAll}")
+					AddAllValueOptions+=("${OptionAddAll}" "" "${AddAllHelpLine-}")
+				fi
+				local -a ValueOptions=()
+				ValueOptions=(
+					"${TemplateValueOptions[@]-}"
+					"${ClearValueOptions[@]-}"
+				)
+				if [[ -n ${EnabledValueOptions[*]-} ]]; then
+					ValueOptions+=("${EnabledValueOptions[@]-}"
+					)
+				fi
+				if [[ -n ${StockValueOptions[*]-} ]]; then
+					ValueOptions+=(
+						"${AddAllValueOptions[@]-}"
+						"${StockValueOptions[@]-}"
+					)
+				fi
+				run_script 'menu_heading_into' Heading ":${AppName}" "${VarNameHeading}"
+				local SelectValueMenuText="${Heading}\n\nWhat variable would you like create for application {{|Highlight|}}${AppName}{{[-]}}?"
+				local -a SelectValueDialog=(
+					"${Title}"
+					"${SelectValueMenuText}"
+					--maximized
+					--item-help
+					--no-hot-list
+					--ok-label:Select
+					--extra-label:Edit
+					--cancel-label:Done
+					"${ValueOptions[@]}"
+				)
+				local -i SelectValueDialogButtonPressed=0
+				local SelectedOption
+				menu_add_var_select_into SelectedOption "${SelectValueDialog[@]}" || SelectValueDialogButtonPressed=$?
+				case ${DIALOG_BUTTONS[SelectValueDialogButtonPressed]-} in
+					OK) # SELECT button
+						if [[ ${SelectedOption} == "${OptionClear}" ]]; then
+							VarName=""
+						elif [[ ${SelectedOption} == "${OptionAddAll}" ]]; then
+							local Question="{{[-]}}Would you like to create the following stock variables to use in your override file?\n"
+							for Option in "${ValidStockOptions[@]}"; do
+								Question+="\n   {{|Highlight|}}${Option// /}{{[-]}}"
+							done
+							run_script 'menu_heading_into' Heading ":${AppName}"
+							if run_script 'question_prompt' N "${Heading}\n\n${Question}" "Create Stock Variables" "${ASSUMEYES:+Y}" "Create" "Back"; then
+								run_script 'menu_heading_into' Heading ":${AppName}" "${VarNameHeading}"
+								#shellcheck disable=SC2034 # (warning): PipePID is passed by name to tui_pipe_open/close via nameref and appears unused to shellcheck.
+								local -i PipeFD PipePID
+								tui_pipe_open PipeFD PipePID "{{|TitleSuccess|}}Creating Stock Variables" "${Heading}"
+								{
+									notice "Adding variables to {{|File|}}${COMPOSE_ENV}{{[-]}}:"
+									for Option in "${ValidStockOptions[@]}"; do
+										local DefaultValue
+										run_script 'var_default_value_into' DefaultValue "${Option// /}"
+										notice "   {{|Var|}}${Option// /}=${DefaultValue}{{[-]}}"
+										run_script 'env_set_literal' "${Option// /}" "${DefaultValue}"
+									done
+								} >&${PipeFD} 2>&1
+								tui_pipe_close PipeFD PipePID
+							fi
+							continue
+						elif [[ ${SelectedOption} =~ ${APPNAME__ENABLED}|${StockOptionsRegex} ]]; then
+							VarName="${SelectedOption// /}"
+						fi
+						;;
+					EXTRA) # EDIT button
+						local Option
+						Option="$(${GREP} -o -P "^RENAMED \K(${TemplateOptionsRegex})(?= )" <<< "${SelectedOption}")"
+						if [[ ${Option} =~ ^${TemplateOptionsRegex}$ ]]; then
+							local EditedValue="${SelectedOption#"RENAMED ${Option} "*}"
+							if [[ -n ${EditedValue} ]]; then
+								VarName="${Option// /}${EditedValue}"
+							fi
+						fi
+						# Convert to upper case and remove whitespace
+						VarName="$(tr -d '[:blank:]' <<< "${VarName^^}")"
+						;;
+					CANCEL | ESC) # DONE button
+						local ErrorMessage=''
+						local DetectedAppName
+						if [[ -z ${VarName-} ]]; then
+							run_script 'menu_heading_into' Heading ":${AppName}" "${VarNameHeading}"
+							if run_script 'question_prompt' N "${Heading}\n\nDo you really want to cancel adding a variable?\n" "Cancel Adding Variable" "${ASSUMEYES:+Y}" "Done" "Back"; then
+								# Value is empty, exit
+								return
+							fi
+							continue
+						elif ! run_script 'varname_is_valid' "${VarName}" "_BARE_"; then
+							ErrorMessage="The variable name {{|Highlight|}}${VarName}{{[-]}} is not a valid name.\n\n Please input another variable name."
+						elif run_script 'env_var_exists' "${VarName}"; then
+							ErrorMessage="The variable {{|Highlight|}}${VarName}{{[-]}} already exists.\n\n Please input another variable name."
+						else
+							local DetectedApp
+							run_script 'varname_to_appname_into' DetectedApp "${VarName}"
+							run_script 'app_nicename_into' DetectedAppName "${DetectedApp}"
+							if [[ ${DetectedAppName^^} == "" ]]; then
+								ErrorMessage="The variable name {{|Highlight|}}${VarName}{{[-]}} is not a valid name for app {{|Highlight|}}${AppName}{{[-]}}. It would be a global variable.\n\n Please input another variable name."
+							elif [[ ${DetectedAppName^^} != "${APPNAME}" ]]; then
+								ErrorMessage="The variable name {{|Highlight|}}${VarName}{{[-]}} is not a valid name for app {{|Highlight|}}${AppName}{{[-]}}. It would be a variable for an app named {{|Highlight|}}${DetectedAppName}{{[-]}}.\n\n Please input another variable name."
+							fi
+						fi
+						if [[ -n ${ErrorMessage-} ]]; then
+							run_script 'menu_heading_into' Heading ":${AppName}" "${VarNameHeading}"
+							tui_error "${Title}" "${Heading}\n\n${ErrorMessage}"
+							continue
+						fi
+						Question="Create variable {{|Highlight|}}${VarName}{{[-]}} for application {{|Highlight|}}${AppName}{{[-]}}?\n"
+						run_script 'menu_heading_into' Heading "$:{AppName}" "${VarNameHeading}"
+						if run_script 'question_prompt' N "${Heading}\n\n${Question}" "Create Variable" "${ASSUMEYES:+Y}" "Create" "Back"; then
+							run_script 'var_default_value_into' Default "${VarName}"
+							run_script 'menu_heading_into' Heading ":${AppName}" "${VarNameHeading}"
+							run_script_tui "{{|TitleSuccess|}}Creating Variable" "${Heading}\n\n" "${DIALOGTIMEOUT}" \
+								'env_set_literal' "${VarName}" "${Default}"
+							run_script 'menu_value_prompt' "${VarName}"
+							return
+						fi
+						;;
+				esac
+			done
+			;;
+		APPENV | GLOBAL)
+			local VarName=''
+			local AppNameHeading=""
+			if [[ -n ${AppName-} ]]; then
+				AppNameHeading="${AppName}:"
+			fi
+			while true; do
+				set_screen_size
+				VarNameHeading="${VarName:-${VarNameNone}}"
+				local InputValueText
+				run_script 'menu_heading_into' Heading "${AppNameHeading}" ""
+				if [[ ${VarType} == APPENV ]]; then
+					InputValueText="${Heading}\n\nWhat variable would you like create for application {{|Highlight|}}${AppName}{{[-]}}?\n"
+				else # GLOBAL
+					InputValueText="${Heading}\n\nWhat global variable would you like create?\n"
+				fi
+				local ErrorMessage=''
+				local DetectedAppName=''
+				local -a InputValueDialog=(
+					"${Title}"
+					"${InputValueText}"
+					--maximized
+					--ok-label:Select
+					--cancel-label:Back
+					--exit-button
+					"${VarName}"
+				)
+				local InputValueDialogButtonPressed=0
+				tui_inputbox_into VarName "${InputValueDialog[@]}" || InputValueDialogButtonPressed=$?
+				case ${DIALOG_BUTTONS[InputValueDialogButtonPressed]-} in
+					OK)
+						local Default
+						VarName="$(tr -d '[:blank:]' <<< "${VarName}")"
+						if [[ -z ${VarName} ]]; then
+							continue
+						fi
+						VarNameHeading="${VarName:-${VarNameNone}}"
+						if ! run_script 'varname_is_valid' "${VarName}" "_BARE_"; then
+							ErrorMessage="The variable name {{|Highlight|}}${VarName}{{[-]}} is not a valid name.\n\n Please input another variable name."
+						elif run_script 'env_var_exists' "${VarName}" "${VarFile}"; then
+							ErrorMessage="The variable {{|Highlight|}}${VarName}{{[-]}} already exists.\n\n Please input another variable name."
+						elif [[ ${VarType} == GLOBAL ]]; then
+							local DetectedApp
+							run_script 'varname_to_appname_into' DetectedApp "${VarName}"
+							run_script 'app_nicename_into' DetectedAppName "${DetectedApp}"
+							if [[ ${DetectedAppName} != "" ]]; then
+								ErrorMessage="The variable name {{|Highlight|}}${VarName}{{[-]}} is not a valid global variable name. It would be a variable for an app named {{|Highlight|}}${DetectedAppName}{{[-]}}\n\n Please input another variable name."
+							fi
+						fi
+						if [[ -n ${ErrorMessage} ]]; then
+							run_script 'menu_heading_into' Heading "${AppNameHeading}" "${VarNameHeading}"
+							tui_error "${Title}" "${Heading}\n\n${ErrorMessage}"
+							continue
+						fi
+						run_script 'menu_heading_into' Heading "${AppNameHeading}" "${VarNameHeading}"
+						local Question
+						Question="Create variable {{|Highlight|}}${VarName}{{[-]}}?\n"
+						if [[ ${VarType} == "APPENV" ]]; then
+							Question="Create variable {{|Highlight|}}${VarName}{{[-]}} for application {{|Highlight|}}${AppName}{{[-]}}?\n"
+							if run_script 'question_prompt' N "${Heading}\n\n${Question}" "Create Variable" "${ASSUMEYES:+Y}" "Create" "Back"; then
+								run_script 'var_default_value_into' Default "${AppName}:${VarName}"
+								run_script 'menu_heading_into' Heading "${AppNameHeading}" "${VarNameHeading}"
+								run_script_tui "{{|TitleSuccess|}}Creating Variable" "${Heading}\n\n" "${DIALOGTIMEOUT}" \
+									'env_set_literal' "${appname}:${VarName}" "${Default}"
+								run_script 'menu_value_prompt' "${appname}:${VarName}"
+								return
+							fi
+						else # GLOBAL
+							run_script 'menu_heading_into' Heading "${AppNameHeading}" "${VarNameHeading}"
+							Question="Create global variable {{|Highlight|}}${VarName}{{[-]}}?\n"
+							if run_script 'question_prompt' N "${Heading}\n\n${Question}" "Create Variable" "${ASSUMEYES:+Y}" "Create" "Back"; then
+								run_script 'var_default_value_into' Default "${VarName}"
+								run_script 'menu_heading_into' Heading "${AppNameHeading}" "${VarNameHeading}"
+								run_script_tui "{{|TitleSuccess|}}Creating Variable" "${Heading}\n\n" "${DIALOGTIMEOUT}" \
+									'env_set_literal' "${VarName}" "${Default}"
+								run_script 'menu_value_prompt' "${VarName}"
+								return
+							fi
+						fi
+						;;
+					CANCEL | ESC)
+						return
+						;;
+					EXIT)
+						run_script 'menu_exit'
+						continue
+						;;
+					*)
+						invalid_tui_button ${InputValueDialogButtonPressed}
+						;;
+				esac
+			done
+			;;
+	esac
+
+}
+test_menu_add_var() {
+	# run_script 'menu_add_var'
+	warn "CI does not test menu_add_var."
+}

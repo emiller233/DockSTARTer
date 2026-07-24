@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+declare -a _dependencies_list=()
+
+app_nicename_from_template() {
+	# Return the "NiceName" of the appname(s) passed. If there is no "NiceName", return the "Title__Case" of "appname"
+	local -a AppList
+	IFS=$' \t\n\r' read -d '' -ra AppList <<< "$*" || true
+	for APPNAME in "${AppList[@]}"; do
+		local result
+		run_script 'app_nicename_from_template_into' result "${APPNAME}"
+		echo "${result}"
+	done
+}
+
+test_app_nicename_from_template() {
+	local ForcePass='' # Force the tests to pass even on failure if set to a non-empty value
+	local -i result=0
+	run_script 'appvars_create' WATCHTOWER NZBGET
+	local -a Test=(
+		WATCHTOWER Watchtower
+		SAMBA Samba
+		RADARR Radarr
+		nzbget NZBGet
+		NZBGet NZBGet
+		NZBGET NZBGet
+		NONEXISTENTAPP Nonexistentapp
+		WATCHTOWER__INSTANCE Watchtower__Instance
+		SAMBA__INSTANCE Samba__Instance
+		RADARR__INSTANCE Radarr__Instance
+		NZBGET__INSTANCE NZBGet__Instance
+		NONEXISTENTAPP__INSTANCE Nonexistentapp__Instance
+		NONEXISTENTAPP__4K Nonexistentapp__4K
+		NONEXISTENTAPP__23KKK Nonexistentapp__23Kkk
+	)
+	run_unit_tests_pipe "App" "App" "${ForcePass}" < <(
+		for ((i = 0; i < ${#Test[@]}; i += 2)); do
+			printf '%s\n' \
+				"${Test[i]}" \
+				"${Test[i + 1]}" \
+				"$(run_script 'app_nicename_from_template' "${Test[i]}")"
+		done
+	)
+	result=$?
+	run_script 'appvars_purge' WATCHTOWER NZBGET
+	return ${result}
+}

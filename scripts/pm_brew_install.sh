@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+pm_brew_install() {
+	local -a Dependencies=("$@")
+
+	local REDIRECT='&> /dev/null '
+	if [[ -n ${VERBOSE-} ]]; then
+		REDIRECT='2>&1 '
+	fi
+
+	notice "Determining packages to install."
+	local -a Packages
+	readarray -t Packages < <(detect_packages "${Dependencies[@]}")
+
+	if [[ ${#Packages[@]} -eq 0 ]]; then
+		notice "No packages found to install."
+		return
+	fi
+
+	#shellcheck disable=SC2124 #Assigning an array to a string! Assign as array, or use * instead of @ to concatenate.
+	local PackagesString="${Packages[@]}"
+	local pkglist
+	printf -v pkglist ", '{{|Folder|}}%s{{[-]}}'" "${Packages[@]}"
+	pkglist="${pkglist:2}"
+
+	notice "Installing packages: ${pkglist}"
+
+	Command="brew install ${PackagesString}"
+	notice "Running: {{|RunningCommand|}}${Command}{{[-]}}"
+	eval "${REDIRECT}${Command}" ||
+		fatal \
+			"Failed to install dependencies from brew." \
+			"Failing command: {{|FailingCommand|}}${Command}"
+}
+
+detect_packages() {
+	local -a Dependencies=("$@")
+
+	Old_IFS="${IFS}"
+	IFS='|'
+	RegEx_Package_Blacklist="(${PM_PACKAGE_BLACKLIST[*]-})"
+	IFS="${Old_IFS}"
+
+	local DepsSearch
+	DepsSearch="$(printf '%s ' "${Dependencies[@]}" | xargs)"
+
+	local Command="brew which-formula ${DepsSearch}"
+	notice "Running: {{|RunningCommand|}}${Command}{{[-]}}"
+	eval "${Command}" 2> /dev/null | while IFS= read -r line; do
+		if [[ ! ${line} =~ ^${RegEx_Package_Blacklist}$ ]]; then
+			echo "${line}"
+		fi
+	done | sort -u
+}
+
+test_pm_brew_install() {
+	warn "CI does not test pm_brew_install."
+}

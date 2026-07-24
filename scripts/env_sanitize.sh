@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+declare -a _dependencies_list=()
+
+env_sanitize() {
+	local -a VarsToUpdate
+	local -A UpdatedVarValue
+	local SkipBackup=${1-}
+
+	# Update the HOME variable if it is not set to the detected home directory
+	local HOME
+	run_script 'env_get_into' HOME HOME
+	if [[ ${HOME} != "${DETECTED_HOMEDIR}" ]]; then
+		HOME="${DETECTED_HOMEDIR}"
+		VarsToUpdate+=(HOME)
+		UpdatedVarValue["HOME"]="${DETECTED_HOMEDIR}"
+	fi
+
+	local DOCKER_CONFIG_FOLDER DOCKER_COMPOSE_FOLDER ORIG_CONFIG_FOLDER ORIG_COMPOSE_FOLDER
+
+	run_script 'env_get_into' ORIG_CONFIG_FOLDER DOCKER_CONFIG_FOLDER
+	run_script 'config_get_into' LITERAL_CONFIG_FOLDER paths.config_folder || true
+	if [[ -z ${LITERAL_CONFIG_FOLDER-} ]]; then
+		run_script 'config_get_into' LITERAL_CONFIG_FOLDER paths.config_folder "${DEFAULT_TOML_FILE}" || true
+	fi
+	if [[ -z ${LITERAL_CONFIG_FOLDER-} ]]; then
+		LITERAL_CONFIG_FOLDER="${ORIG_CONFIG_FOLDER}"
+	fi
+	DOCKER_CONFIG_FOLDER="${LITERAL_CONFIG_FOLDER}"
+
+	run_script 'env_get_into' ORIG_COMPOSE_FOLDER DOCKER_COMPOSE_FOLDER
+	run_script 'config_get_into' LITERAL_COMPOSE_FOLDER paths.compose_folder || true
+	if [[ -z ${LITERAL_COMPOSE_FOLDER-} ]]; then
+		run_script 'config_get_into' LITERAL_COMPOSE_FOLDER paths.compose_folder "${DEFAULT_TOML_FILE}" || true
+	fi
+	if [[ -z ${LITERAL_COMPOSE_FOLDER-} ]]; then
+		LITERAL_COMPOSE_FOLDER="${ORIG_COMPOSE_FOLDER}"
+	fi
+	DOCKER_COMPOSE_FOLDER="${LITERAL_COMPOSE_FOLDER}"
+
+	set_global_variables
+
+	if [[ ${ORIG_CONFIG_FOLDER} != "${LITERAL_CONFIG_FOLDER}" ]]; then
+		DOCKER_CONFIG_FOLDER="${LITERAL_CONFIG_FOLDER}"
+		VarsToUpdate+=(DOCKER_CONFIG_FOLDER)
+		UpdatedVarValue["DOCKER_CONFIG_FOLDER"]="${DOCKER_CONFIG_FOLDER}"
+	fi
+	if [[ ${ORIG_COMPOSE_FOLDER} != "${LITERAL_COMPOSE_FOLDER}" ]]; then
+		DOCKER_COMPOSE_FOLDER="${LITERAL_COMPOSE_FOLDER}"
+		VarsToUpdate+=(DOCKER_COMPOSE_FOLDER)
+		UpdatedVarValue["DOCKER_COMPOSE_FOLDER"]="${DOCKER_COMPOSE_FOLDER}"
+	fi
+
+	# Backup the user files
+	if [[ ${SkipBackup-} != "--skip-backup" ]]; then
+		run_script 'env_backup'
+	fi
+
+	# Migrate from old global variable names
+	run_script 'env_migrate_global'
+
+	# Add any default global variables that might have been deleted
+	run_script 'env_merge_newonly' "${COMPOSE_ENV}" "${COMPOSE_ENV_DEFAULT_FILE}"
+
+	local -a VarList
+
+	# Set defaults for some "special cases" of the global variables
+	VarList=(
+		DOCKER_HOSTNAME
+		TZ
+	)
+	for VarName in "${VarList[@]-}"; do
+		local Value
+		run_script 'env_get_into' Value "${VarName}"
+		if [[ -z ${Value-} ]]; then
+			# If the variable is empty get the default value
+			local Default
+			run_script 'var_default_value_into' Default "${VarName}"
+			VarsToUpdate+=("${VarName}")
+			UpdatedVarValue["${VarName}"]="${Default}"
+		fi
+	done
+
+	VarList=(
+		GLOBAL_LAN_NETWORK
+		DOCKER_GID
+		PGID
+		PUID
+	)
+	for VarName in "${VarList[@]-}"; do
+		local Value
+		run_script 'env_get_into' Value "${VarName}"
+		if [[ -z ${Value-} || ${Value-} == *x* ]]; then
+			# If the variable is empty or contains an "x", get the default value
+			local Default
+			run_script 'var_default_value_into' Default "${VarName}"
+			VarsToUpdate+=("${VarName}")
+			UpdatedVarValue["${VarName}"]="${Default}"
+		fi
+	done
+
+	# Replace ~ with /home/username
+	local -a VarList=(
+		DOCKER_VOLUME_CONFIG
+		DOCKER_VOLUME_STORAGE
+		DOCKER_VOLUME_STORAGE2
+		DOCKER_VOLUME_STORAGE3
+		DOCKER_VOLUME_STORAGE4
+	)
+	for VarName in "${VarList[@]-}"; do
+		# Get the value including quotes
+		local Value
+		run_script 'env_get_into' Value "${VarName}"
+		local UpdatedValue
+		run_script 'sanitize_path_into' UpdatedValue "${Value}"
+		UpdatedValue="$(
+			replace_with_vars \
+				"${UpdatedValue}" \
+				DOCKER_CONFIG_FOLDER "${DOCKER_CONFIG_FOLDER}" \
+				HOME "${HOME}"
+		)"
+		if [[ ${Value} != "${UpdatedValue}" ]]; then
+			VarsToUpdate+=("${VarName}")
+			UpdatedVarValue["${VarName}"]="\"${UpdatedValue}\""
+		fi
+	done
+
+	# Process the variable value changes
+	if [[ -n ${VarsToUpdate[*]-} ]]; then
+		notice "Setting variables in {{|File|}}${COMPOSE_ENV}{{[-]}}:"
+		for VarName in "${VarsToUpdate[@]}"; do
+			local Value="${UpdatedVarValue["${VarName}"]}"
+			notice "   {{|Var|}}${VarName}=${Value}{{[-]}}"
+			run_script 'env_set_literal' "${VarName}" "${Value}"
+		done
+	fi
+}
+
+test_env_sanitize() {
+	run_script 'appvars_create' WATCHTOWER
+	run_script 'appvars_purge' WATCHTOWER
+}

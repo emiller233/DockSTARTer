@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+appvars_purge_all() {
+	local Title="Purge All Variables"
+	local -a DisabledApps
+	run_script 'app_list_disabled_into_array' DisabledApps
+	if [[ -n ${DisabledApps[*]-} ]]; then
+		if [[ ${CI-} == true ]] || run_script 'question_prompt' Y "Would you like to purge variables for all disabled apps?" "${Title}" "${ASSUMEYES:+Y}"; then
+			info "Purging disabled app variables."
+			for APPNAME in "${DisabledApps[@]-}"; do
+				run_script 'appvars_purge' "${APPNAME}"
+			done
+		fi
+	else
+		notice "File '{{|File|}}${COMPOSE_ENV}{{[-]}}' does not contain any disabled apps."
+	fi
+}
+
+test_appvars_purge_all() {
+	run_script 'appvars_purge_all'
+	run_script 'env_update'
+	cat "${COMPOSE_ENV}"
+}
